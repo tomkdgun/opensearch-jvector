@@ -11,17 +11,28 @@
 
 package org.opensearch.knn.index.mapper;
 
-import java.util.Arrays;
-
 import org.apache.lucene.document.StoredField;
 import org.apache.lucene.util.BytesRef;
 import org.junit.Assert;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 import org.opensearch.Version;
 import org.opensearch.knn.KNNTestCase;
+import org.opensearch.knn.index.SpaceType;
 import org.opensearch.knn.index.VectorDataType;
-import org.opensearch.knn.index.codec.util.KNNVectorSerializerFactory;
+import org.opensearch.knn.index.codec.util.KNNVectorAsCollectionOfFloatsSerializer;
+import org.opensearch.knn.index.engine.KNNEngine;
+import org.opensearch.knn.index.engine.KNNMethodContext;
+import org.opensearch.knn.index.engine.MethodComponentContext;
+
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Map;
+
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+import static org.opensearch.knn.common.KNNConstants.ENCODER_SQ;
+import static org.opensearch.knn.common.KNNConstants.ENCODER_FLAT;
+import static org.opensearch.knn.common.KNNConstants.METHOD_ENCODER_PARAMETER;
+import static org.opensearch.knn.common.KNNConstants.METHOD_HNSW;
 
 public class KNNVectorFieldMapperUtilTests extends KNNTestCase {
 
@@ -55,7 +66,7 @@ public class KNNVectorFieldMapperUtilTests extends KNNTestCase {
         StoredField storedField = KNNVectorFieldMapperUtil.createStoredFieldForFloatVector(TEST_FIELD_NAME, TEST_FLOAT_VECTOR);
         assertEquals(TEST_FIELD_NAME, storedField.name());
         BytesRef bytes = new BytesRef(storedField.binaryValue().bytes);
-        assertArrayEquals(TEST_FLOAT_VECTOR, KNNVectorSerializerFactory.getDefaultSerializer().byteToFloatArray(bytes), 0.001f);
+        assertArrayEquals(TEST_FLOAT_VECTOR, KNNVectorAsCollectionOfFloatsSerializer.INSTANCE.byteToFloatArray(bytes), 0.001f);
 
         Object vector = KNNVectorFieldMapperUtil.deserializeStoredVector(storedField.binaryValue(), VectorDataType.FLOAT);
         assertTrue(vector instanceof float[]);
@@ -71,8 +82,15 @@ public class KNNVectorFieldMapperUtilTests extends KNNTestCase {
         );
         when(knnVectorFieldTypeBinary.getVectorDataType()).thenReturn(VectorDataType.BINARY);
 
+        KNNVectorFieldType knnVectorFieldTypeModelBased = mock(KNNVectorFieldType.class);
+        when(knnVectorFieldTypeModelBased.getKnnMappingConfig()).thenReturn(
+            getMappingConfigForMethodMapping(getDefaultBinaryKNNMethodContext(), 8)
+        );
+        String modelId = "test-model";
+        when(knnVectorFieldTypeModelBased.getKnnMappingConfig()).thenReturn(getMappingConfigForModelMapping(modelId, 4));
         assertEquals(3, KNNVectorFieldMapperUtil.getExpectedVectorLength(knnVectorFieldType));
         assertEquals(1, KNNVectorFieldMapperUtil.getExpectedVectorLength(knnVectorFieldTypeBinary));
+        assertEquals(4, KNNVectorFieldMapperUtil.getExpectedVectorLength(knnVectorFieldTypeModelBased));
     }
 
     public void testUseLuceneKNNVectorsFormat_withDifferentInputs_thenSuccess() {
@@ -88,5 +106,41 @@ public class KNNVectorFieldMapperUtilTests extends KNNTestCase {
         Assert.assertFalse(KNNVectorFieldMapperUtil.useFullFieldNameValidation(Version.V_2_16_0));
         Assert.assertTrue(KNNVectorFieldMapperUtil.useFullFieldNameValidation(Version.V_2_17_0));
         Assert.assertTrue(KNNVectorFieldMapperUtil.useFullFieldNameValidation(Version.V_2_18_0));
+    }
+
+    public void testGetEncoderName_whenNullMethodContext_thenReturnsNull() {
+        assertNull(KNNVectorFieldMapperUtil.getEncoderName(null));
+    }
+
+    public void testGetEncoderName_whenEncoderPresent_thenReturnsName() {
+        for (String encoder : Arrays.asList(ENCODER_FLAT, ENCODER_SQ, ENCODER_SQ)) {
+            KNNMethodContext methodContext = new KNNMethodContext(
+                KNNEngine.FAISS,
+                SpaceType.L2,
+                new MethodComponentContext(
+                    METHOD_HNSW,
+                    Map.of(METHOD_ENCODER_PARAMETER, new MethodComponentContext(encoder, Collections.emptyMap()))
+                )
+            );
+            assertEquals(encoder, KNNVectorFieldMapperUtil.getEncoderName(methodContext));
+        }
+    }
+
+    public void testGetEncoderName_whenNoEncoderParameter_thenReturnsNull() {
+        KNNMethodContext methodContext = new KNNMethodContext(
+            KNNEngine.FAISS,
+            SpaceType.L2,
+            new MethodComponentContext(METHOD_HNSW, Collections.emptyMap())
+        );
+        assertNull(KNNVectorFieldMapperUtil.getEncoderName(methodContext));
+    }
+
+    public void testGetEncoderName_whenEncoderParameterIsNotMethodComponentContext_thenReturnsNull() {
+        KNNMethodContext methodContext = new KNNMethodContext(
+            KNNEngine.FAISS,
+            SpaceType.L2,
+            new MethodComponentContext(METHOD_HNSW, Map.of(METHOD_ENCODER_PARAMETER, "not_a_method_component_context"))
+        );
+        assertNull(KNNVectorFieldMapperUtil.getEncoderName(methodContext));
     }
 }

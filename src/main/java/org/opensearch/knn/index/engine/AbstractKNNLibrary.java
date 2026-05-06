@@ -20,10 +20,7 @@ import java.util.Map;
 @AllArgsConstructor(access = AccessLevel.PACKAGE)
 public abstract class AbstractKNNLibrary implements KNNLibrary {
 
-    /** Map of method name -> KNN method implementation. */
     protected final Map<String, KNNMethod> methods;
-
-    /** Library version identifier. */
     @Getter
     protected final String version;
 
@@ -109,7 +106,7 @@ public abstract class AbstractKNNLibrary implements KNNLibrary {
     private String validateMethodExists(String methodName) {
         KNNMethod method = methods.get(methodName);
         if (method == null) {
-            return String.format(Locale.ROOT, "Invalid method name: %s", methodName);
+            return String.format("Invalid method name: %s", methodName);
         }
         return null;
     }

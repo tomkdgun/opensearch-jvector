@@ -9,6 +9,7 @@ import org.opensearch.core.common.Strings;
 import org.opensearch.knn.KNNTestCase;
 
 public class ModeTests extends KNNTestCase {
+
     public void testFromName() {
         assertEquals(Mode.NOT_CONFIGURED, Mode.fromName(null));
         assertEquals(Mode.NOT_CONFIGURED, Mode.fromName(""));
@@ -28,4 +29,5 @@ public class ModeTests extends KNNTestCase {
         assertFalse(Mode.isConfigured(null));
         assertTrue(Mode.isConfigured(Mode.ON_DISK));
     }
+
 }

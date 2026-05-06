@@ -9,7 +9,9 @@ package org.opensearch.knn.common.featureflags;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import lombok.experimental.UtilityClass;
+import org.opensearch.common.Booleans;
 import org.opensearch.common.settings.Setting;
+import org.opensearch.knn.index.KNNSettings;
 
 import java.util.List;
 
@@ -24,6 +26,8 @@ public class KNNFeatureFlags {
 
     // Feature flags
     private static final String KNN_FORCE_EVICT_CACHE_ENABLED = "knn.feature.cache.force_evict.enabled";
+    private static final String KNN_PREFETCH_ENABLED = "knn.feature.prefetch.enabled";
+    private static final boolean KNN_PREFETCH_ENABLED_DEFAULT_VALUE = true;
 
     @VisibleForTesting
     public static final Setting<Boolean> KNN_FORCE_EVICT_CACHE_ENABLED_SETTING = Setting.boolSetting(
@@ -33,7 +37,41 @@ public class KNNFeatureFlags {
         Dynamic
     );
 
+    public static final Setting<Boolean> KNN_PREFETCH_ENABLED_SETTING = Setting.boolSetting(
+        KNN_PREFETCH_ENABLED,
+        KNN_PREFETCH_ENABLED_DEFAULT_VALUE,
+        NodeScope,
+        Dynamic
+    );
+
+    /**
+     * All feature flags which needs to be provided as setting should be added here.
+     * @return List of Feature flag settings
+     */
     public static List<Setting<?>> getFeatureFlags() {
+        return ImmutableList.of(KNN_FORCE_EVICT_CACHE_ENABLED_SETTING, KNN_PREFETCH_ENABLED_SETTING);
+    }
+
+    /**
+     * All feature flags which when changed should trigger a cache rebuild
+     * @return List of Feature flag settings
+     */
+    public static List<Setting<?>> getFeatureFlagsWhichRebuildsCache() {
         return ImmutableList.of(KNN_FORCE_EVICT_CACHE_ENABLED_SETTING);
+    }
+
+    /**
+     * Checks if force evict for cache is enabled by executing a check against cluster settings
+     * @return true if force evict setting is set to true
+     */
+    public static boolean isForceEvictCacheEnabled() {
+        return Booleans.parseBoolean(KNNSettings.state().getSettingValue(KNN_FORCE_EVICT_CACHE_ENABLED).toString(), false);
+    }
+
+    public static boolean isPrefetchEnabled() {
+        return Booleans.parseBoolean(
+            KNNSettings.state().getSettingValue(KNN_PREFETCH_ENABLED).toString(),
+            KNN_PREFETCH_ENABLED_DEFAULT_VALUE
+        );
     }
 }

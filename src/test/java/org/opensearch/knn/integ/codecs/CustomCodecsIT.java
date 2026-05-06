@@ -16,6 +16,7 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.knn.KNNRestTestCase;
 import org.opensearch.knn.KNNResult;
 import org.opensearch.knn.TestUtils;
+import org.opensearch.protobufs.MatchAllQuery;
 
 import com.google.common.primitives.Floats;
 
@@ -69,7 +70,7 @@ public class CustomCodecsIT extends KNNRestTestCase {
         refreshAllNonSystemIndices();
 
         // Test search queries
-        Response response = performSearch(INDEX_NAME, "{\"query\": { \"match_all\": {} } }");
+        Response response = performSearch(INDEX_NAME, MatchAllQuery.newBuilder().build().toString());
         String responseBody = EntityUtils.toString(response.getEntity());
         List<KNNResult> knnResults = parseSearchResponse(responseBody, fieldName);
         assertEquals(10, knnResults.size());
@@ -78,7 +79,7 @@ public class CustomCodecsIT extends KNNRestTestCase {
         closeIndex(INDEX_NAME);
         openIndex(INDEX_NAME);
 
-        response = performSearch(INDEX_NAME, "{\"query\": { \"match_all\": {} } }");
+        response = performSearch(INDEX_NAME, MatchAllQuery.newBuilder().build().toString());
         responseBody = EntityUtils.toString(response.getEntity());
         knnResults = parseSearchResponse(responseBody, fieldName);
         assertEquals(10, knnResults.size());
@@ -108,7 +109,7 @@ public class CustomCodecsIT extends KNNRestTestCase {
         restoreSnapshot(restoreSuffix, List.of(INDEX_NAME), repository, snapshot, true);
 
         // Test search queries
-        Response response = performSearch(INDEX_NAME + restoreSuffix, "{\"query\": { \"match_all\": {} } }");
+        Response response = performSearch(INDEX_NAME + restoreSuffix, MatchAllQuery.newBuilder().build().toString());
         String responseBody = EntityUtils.toString(response.getEntity());
         List<KNNResult> knnResults = parseSearchResponse(responseBody, fieldName);
         assertEquals(10, knnResults.size());

@@ -102,7 +102,7 @@ public class BinaryQuantizationOutputTests extends KNNTestCase {
 
         // Assert
         assertNotSame(initialVector, newVector); // The array reference should change
-        assertEquals((BITS_PER_COORDINATE * newLength + 7) / 8, newVector.length); // Correct size for new vector
+        assertEquals(newVector.length, (BITS_PER_COORDINATE * newLength + 7) / 8); // Correct size for new vector
     }
 
     public void testPrepareQuantizedVector_ShouldRetainSameArray_WhenCalledWithSameLength() {

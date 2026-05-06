@@ -7,6 +7,7 @@ package org.opensearch.knn.index.util;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
+
 import org.apache.commons.lang3.StringUtils;
 import org.opensearch.Version;
 import org.opensearch.cluster.metadata.IndexMetadata;
@@ -14,6 +15,7 @@ import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.common.ValidationException;
 import org.opensearch.index.mapper.FieldMapper;
 import org.opensearch.index.mapper.MapperService;
+import org.opensearch.index.mapper.SourceFieldMapper;
 import org.opensearch.knn.common.KNNConstants;
 import org.opensearch.knn.index.engine.KNNMethodContext;
 import org.opensearch.knn.index.KNNSettings;
@@ -21,21 +23,33 @@ import org.opensearch.knn.index.engine.MethodComponentContext;
 import org.opensearch.knn.index.SpaceType;
 import org.opensearch.knn.index.VectorDataType;
 import org.opensearch.knn.index.mapper.KNNVectorFieldMapper;
+import org.opensearch.knn.index.query.SegmentLevelQuantizationInfo;
+import org.opensearch.knn.index.query.SegmentLevelQuantizationUtil;
 import org.opensearch.knn.index.mapper.KNNVectorFieldType;
 import org.opensearch.knn.index.query.request.MethodParameter;
 import org.opensearch.knn.index.engine.KNNEngine;
+import org.opensearch.knn.indices.ModelDao;
+import org.opensearch.knn.indices.ModelMetadata;
+import org.opensearch.knn.indices.ModelUtil;
+import org.opensearch.knn.jni.JNIService;
 
 import java.io.File;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+import static org.opensearch.common.regex.Regex.simpleMatch;
+import static org.opensearch.knn.common.KNNConstants.ADC_ENABLED_FAISS_INDEX_INTERNAL_PARAMETER;
 import static org.opensearch.knn.common.KNNConstants.BYTES_PER_KILOBYTES;
 import static org.opensearch.knn.common.KNNConstants.ENCODER_FLAT;
 import static org.opensearch.knn.common.KNNConstants.EXPAND_NESTED;
+import static org.opensearch.knn.common.KNNConstants.HNSW_ALGO_EF_SEARCH;
+import static org.opensearch.knn.common.KNNConstants.QUANTIZATION_LEVEL_FAISS_INDEX_LOAD_PARAMETER;
 import static org.opensearch.knn.common.KNNConstants.SPACE_TYPE;
+import static org.opensearch.knn.common.KNNConstants.SPACE_TYPE_FAISS_INDEX_LOAD_PARAMETER;
 import static org.opensearch.knn.common.KNNConstants.VECTOR_DATA_TYPE_FIELD;
 import static org.opensearch.knn.index.query.parser.RescoreParser.RESCORE_PARAMETER;
 
@@ -55,6 +69,8 @@ public class IndexUtil {
     private static final Version MINIMAL_TOP_LEVEL_SPACE_TYPE_FEATURE = Version.V_2_17_0;
     private static final Version MINIMAL_SUPPORTED_VERSION_FOR_MODEL_VERSION = Version.V_2_17_0;
     private static final Version MINIMAL_EXPAND_NESTED_FEATURE = Version.V_2_19_0;
+    private static final Version MINIMAL_TOP_LEVEL_ENGINE_FEATURE = Version.V_3_2_0;
+    private static final Version MINIMAL_SUPPORTED_VERSION_FOR_NULL_K = Version.V_3_3_0;
     // public so neural search can access it
     public static final Map<String, Version> minimalRequiredVersionMap = initializeMinimalRequiredVersionMap();
     public static final Set<VectorDataType> VECTOR_DATA_TYPES_NOT_SUPPORTING_ENCODERS = Set.of(VectorDataType.BINARY, VectorDataType.BYTE);
@@ -84,6 +100,8 @@ public class IndexUtil {
      * @param field field name to validate
      * @param expectedDimension expected dimension of the field. If this value is negative, dimension will not be
      *                          checked
+     * @param modelDao used to look up dimension if field uses a model for initialization. Can be null if
+     *                 expectedDimension is negative
      * @return ValidationException exception produced by field validation
      */
     @SuppressWarnings("unchecked")
@@ -91,6 +109,7 @@ public class IndexUtil {
         IndexMetadata indexMetadata,
         String field,
         int expectedDimension,
+        ModelDao modelDao,
         VectorDataType trainRequestVectorDataType,
         KNNMethodContext trainRequestKnnMethodContext
     ) {
@@ -119,7 +138,7 @@ public class IndexUtil {
 
         // Check field path is valid
         if (StringUtils.isEmpty(field)) {
-            exception.addValidationError("Field path is empty.");
+            exception.addValidationError(String.format(Locale.ROOT, "Field path is empty."));
             return exception;
         }
 
@@ -127,13 +146,13 @@ public class IndexUtil {
 
         // Check field existence
         if (fieldMapping == null) {
-            exception.addValidationError(String.format(Locale.ROOT, "Field \"%s\" does not exist.", field));
+            exception.addValidationError(String.format("Field \"%s\" does not exist.", field));
             return exception;
         }
 
         // Check if field is a map. If not, that is a problem
         if (!(fieldMapping instanceof Map)) {
-            exception.addValidationError(String.format(Locale.ROOT, "Field info for \"%s\" is not a map.", field));
+            exception.addValidationError(String.format("Field info for \"%s\" is not a map.", field));
             return exception;
         }
 
@@ -143,9 +162,7 @@ public class IndexUtil {
         Object type = fieldMap.get("type");
 
         if (!(type instanceof String) || !KNNVectorFieldMapper.CONTENT_TYPE.equals(type)) {
-            exception.addValidationError(
-                String.format(Locale.ROOT, "Field \"%s\" is not of type %s.", field, KNNVectorFieldMapper.CONTENT_TYPE)
-            );
+            exception.addValidationError(String.format("Field \"%s\" is not of type %s.", field, KNNVectorFieldMapper.CONTENT_TYPE));
             return exception;
         }
 
@@ -199,14 +216,44 @@ public class IndexUtil {
         // If dimension is null, the training index/field could use a model. In this case, we need to get the model id
         // for the index and then fetch its dimension from the models metadata
         if (dimension == null) {
-            throw new IllegalArgumentException("Dimension should not be null");
+
+            String modelId = (String) fieldMap.get(KNNConstants.MODEL_ID);
+
+            if (modelId == null) {
+                exception.addValidationError(String.format("Field \"%s\" does not have a dimension set.", field));
+                return exception;
+            }
+
+            if (modelDao == null) {
+                throw new IllegalArgumentException(String.format("Field \"%s\" uses model. modelDao cannot be null.", field));
+            }
+
+            ModelMetadata modelMetadata = modelDao.getMetadata(modelId);
+            if (!ModelUtil.isModelCreated(modelMetadata)) {
+                exception.addValidationError(String.format("Model \"%s\" for field \"%s\" is not created.", modelId, field));
+                return exception;
+            }
+
+            dimension = modelMetadata.getDimension();
+            if ((Integer) dimension != expectedDimension) {
+                exception.addValidationError(
+                    String.format(
+                        "Field \"%s\" has dimension %d, which is different from " + "dimension specified in the training request: %d",
+                        field,
+                        dimension,
+                        expectedDimension
+                    )
+                );
+                return exception;
+            }
+
+            return null;
         }
 
         // If the dimension was found in training fields mapping, check that it equals the models proposed dimension.
         if ((Integer) dimension != expectedDimension) {
             exception.addValidationError(
                 String.format(
-                    Locale.ROOT,
                     "Field \"%s\" has dimension %d, which is different from " + "dimension specified in the training request: %d",
                     field,
                     dimension,
@@ -232,11 +279,25 @@ public class IndexUtil {
         SpaceType spaceType,
         KNNEngine knnEngine,
         String indexName,
-        VectorDataType vectorDataType
+        VectorDataType vectorDataType,
+        SegmentLevelQuantizationInfo segmentLevelQuantizationInfo
     ) {
         Map<String, Object> loadParameters = Maps.newHashMap(ImmutableMap.of(SPACE_TYPE, spaceType.getValue()));
 
+        // For nmslib, we need to add the dynamic ef_search parameter that needs to be passed in when the
+        // hnsw graphs are loaded into memory
+        if (KNNEngine.NMSLIB.equals(knnEngine)) {
+            loadParameters.put(HNSW_ALGO_EF_SEARCH, KNNSettings.getEfSearchParam(indexName));
+        }
         loadParameters.put(VECTOR_DATA_TYPE_FIELD, vectorDataType.getValue());
+
+        if (SegmentLevelQuantizationUtil.isAdcEnabled(segmentLevelQuantizationInfo)) {
+            loadParameters.put(ADC_ENABLED_FAISS_INDEX_INTERNAL_PARAMETER, true);
+            final String quantizationLevel = segmentLevelQuantizationInfo.getQuantizationParams().getTypeIdentifier();
+
+            loadParameters.put(QUANTIZATION_LEVEL_FAISS_INDEX_LOAD_PARAMETER, quantizationLevel);
+            loadParameters.put(SPACE_TYPE_FAISS_INDEX_LOAD_PARAMETER, spaceType.getValue());
+        }
 
         return Collections.unmodifiableMap(loadParameters);
     }
@@ -258,6 +319,21 @@ public class IndexUtil {
     }
 
     /**
+     * Checks if index requires shared state
+     *
+     * @param knnEngine The knnEngine associated with the index
+     * @param modelId The modelId associated with the index
+     * @param indexAddr Address to check if loaded index requires shared state
+     * @return true if state can be shared; false otherwise
+     */
+    public static boolean isSharedIndexStateRequired(KNNEngine knnEngine, String modelId, long indexAddr) {
+        if (StringUtils.isEmpty(modelId)) {
+            return false;
+        }
+        return JNIService.isSharedIndexStateRequired(indexAddr, knnEngine);
+    }
+
+    /**
      * Tell if it is binary index or not
      *
      * @param knnEngine knn engine associated with an index
@@ -265,8 +341,22 @@ public class IndexUtil {
      * @return true if it is binary index
      */
     public static boolean isBinaryIndex(KNNEngine knnEngine, Map<String, Object> parameters) {
-        return parameters.get(VECTOR_DATA_TYPE_FIELD) != null
+        return KNNEngine.FAISS == knnEngine
+            && parameters.get(VECTOR_DATA_TYPE_FIELD) != null
             && parameters.get(VECTOR_DATA_TYPE_FIELD).toString().equals(VectorDataType.BINARY.getValue());
+    }
+
+    /**
+     * Return whether Asymmetric Distance Computation (ADC) is enabled for this index.
+     * @param knnEngine knn engine associated with an index
+     * @param parameters parameters associated with an index
+     * @return true if ADC is enabled
+     */
+    public static boolean isADCEnabled(KNNEngine knnEngine, Map<String, Object> parameters) {
+        return KNNEngine.FAISS == knnEngine
+            && parameters != null
+            && parameters.get(ADC_ENABLED_FAISS_INDEX_INTERNAL_PARAMETER) != null
+            && (boolean) parameters.get(ADC_ENABLED_FAISS_INDEX_INTERNAL_PARAMETER);
     }
 
     /**
@@ -346,6 +436,8 @@ public class IndexUtil {
                 put(KNNConstants.TOP_LEVEL_SPACE_TYPE_FEATURE, MINIMAL_TOP_LEVEL_SPACE_TYPE_FEATURE);
                 put(KNNConstants.MODEL_VERSION, MINIMAL_SUPPORTED_VERSION_FOR_MODEL_VERSION);
                 put(EXPAND_NESTED, MINIMAL_EXPAND_NESTED_FEATURE);
+                put(KNNConstants.TOP_LEVEL_ENGINE_FEATURE, MINIMAL_TOP_LEVEL_ENGINE_FEATURE);
+                put(KNNConstants.NULL_K, MINIMAL_SUPPORTED_VERSION_FOR_NULL_K);
             }
         };
 
@@ -369,16 +461,31 @@ public class IndexUtil {
             .equals(VectorDataType.BYTE.getValue());
     }
 
+    /**
+    * Checks whether the k-NN plugin's derived source feature is enabled for the given index.
+    * Returns {@code false} when core's {@code index.derived_source.enabled} is on (core takes precedence),
+    * when source is disabled, when the k-NN derived source setting is off, or when segment
+    * replication with local node-to-node replication is enabled.
+    *
+    * @param mapperService the mapper service for the index, or {@code null}
+    * @return {@code true} if the k-NN plugin should handle derived source for this index
+    */
     public static boolean isDerivedEnabledForIndex(MapperService mapperService) {
         if (mapperService == null) {
             return false;
         }
 
-        if (!mapperService.documentMapper().sourceMapper().enabled()) {
+        if (mapperService.documentMapper().sourceMapper().enabled() == false) {
             return false;
         }
 
-        if (!KNNSettings.isKNNDerivedSourceEnabled(mapperService.getIndexSettings().getSettings())) {
+        // if core based setting is turned on, then it takes precedence
+        if (mapperService.getIndexSettings().getIndexVersionCreated().onOrAfter(Version.V_3_7_0)
+            && mapperService.getIndexSettings().isDerivedSourceEnabled()) {
+            return false;
+        }
+
+        if (KNNSettings.isKNNDerivedSourceEnabled(mapperService.getIndexSettings().getSettings()) == false) {
             return false;
         }
 
@@ -391,10 +498,53 @@ public class IndexUtil {
     }
 
     public static boolean isDerivedEnabledForField(KNNVectorFieldType knnVectorFieldType, MapperService mapperService) {
+        if (knnVectorFieldType == null) {
+            return false;
+        }
+
+        if (isFieldExcludedFromSource(knnVectorFieldType.name(), mapperService)) {
+            return false;
+        }
+
         // Skip copy to fields
         if (mapperService.documentMapper().mappers().getMapper(knnVectorFieldType.name()) instanceof FieldMapper mapper) {
-            return mapper.copyTo() == null || mapper.copyTo().copyToFields() == null || mapper.copyTo().copyToFields().isEmpty();
+            return mapper.copyTo() == null || mapper.copyTo().copyToFields() == null || mapper.copyTo().copyToFields().isEmpty() != false;
         }
         return true;
+    }
+
+    private static boolean isFieldExcludedFromSource(String fieldName, MapperService mapperService) {
+        SourceFieldMapper sourceMapper = mapperService.documentMapper().metadataMapper(SourceFieldMapper.class);
+        if (sourceMapper == null) {
+            return false;
+        }
+
+        Collection<String> includes = sourceMapper.getIncludes();
+        Collection<String> excludes = sourceMapper.getExcludes();
+
+        // If includes are specified, field must match at least one include pattern
+        if (includes != null && !includes.isEmpty()) {
+            boolean matchedInclude = false;
+            for (String include : includes) {
+                if (simpleMatch(include, fieldName)) {
+                    matchedInclude = true;
+                    break;
+                }
+            }
+            if (!matchedInclude) {
+                return true;
+            }
+        }
+
+        // Excludes override includes
+        if (excludes != null && !excludes.isEmpty()) {
+            for (String exclude : excludes) {
+                if (simpleMatch(exclude, fieldName)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 }

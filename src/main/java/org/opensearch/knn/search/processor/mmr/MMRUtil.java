@@ -13,6 +13,9 @@ import org.opensearch.index.mapper.ObjectMapper;
 import org.opensearch.knn.index.SpaceType;
 import org.opensearch.knn.index.VectorDataType;
 import org.opensearch.knn.index.mapper.KNNVectorFieldMapper;
+import org.opensearch.knn.plugin.transport.GetModelAction;
+import org.opensearch.knn.plugin.transport.GetModelRequest;
+import org.opensearch.knn.plugin.transport.GetModelResponse;
 import org.opensearch.knn.search.extension.MMRSearchExtBuilder;
 import org.opensearch.search.pipeline.ProcessorGenerationContext;
 import org.opensearch.transport.client.Client;
@@ -20,9 +23,14 @@ import reactor.util.annotation.NonNull;
 import reactor.util.annotation.Nullable;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -136,7 +144,6 @@ public class MMRUtil {
         if (!nonKnnFields.isEmpty()) {
             throw new IllegalArgumentException(
                 String.format(
-                    Locale.ROOT,
                     "MMR query extension cannot support non knn_vector field [%s].",
                     nonKnnFields.stream()
                         .map(info -> String.format(Locale.ROOT, "%s:%s", info.getIndexName(), info.getFieldPath()))
@@ -164,7 +171,6 @@ public class MMRUtil {
         if (!current.equals(next)) {
             throw new IllegalArgumentException(
                 String.format(
-                    Locale.ROOT,
                     "MMR query extension cannot support different %s [%s, %s] for the knn_vector field at path %s.",
                     fieldDescription,
                     valueFormatter.apply(current),
@@ -211,7 +217,6 @@ public class MMRUtil {
         if (userProvided != null && resolved != null && !userProvided.equals(resolved)) {
             throw new IllegalArgumentException(
                 String.format(
-                    Locale.ROOT,
                     "The %s [%s] provided in the MMR query extension does not match the %s [%s] in target indices.",
                     fieldDescription,
                     valueFormatter.apply(userProvided),
@@ -227,6 +232,95 @@ public class MMRUtil {
             return resolved;
         } else {
             return defaultSupplier.get();
+        }
+    }
+
+    private static MMRVectorFieldInfo resolveVectorFieldInfoFromModel(
+        VectorDataType userProvidedVectorDataType,
+        SpaceType userProvidedSpaceType,
+        List<MMRVectorFieldInfo> MMRVectorFieldInfoList,
+        Map<String, MMRVectorFieldInfo> modelIdToVectorFieldInfo
+    ) throws IllegalArgumentException {
+        SpaceType resolvedSpaceType = null;
+        VectorDataType resolvedVectorDataType = null;
+        for (MMRVectorFieldInfo info : MMRVectorFieldInfoList) {
+            SpaceType spaceType;
+            VectorDataType vectorDataType;
+
+            // Resolve from model if modelId is present, else from field config
+            if (info.getModelId() != null) {
+                MMRVectorFieldInfo infoFromModel = modelIdToVectorFieldInfo.get(info.getModelId());
+                if (infoFromModel == null) {
+                    throw new IllegalStateException(
+                        String.format(
+                            "Unexpected null when try to resolve the info of the vector field at path [%s] based on its model [%s].",
+                            info.getModelId(),
+                            info.getFieldPath()
+                        )
+                    );
+                }
+                vectorDataType = infoFromModel.getVectorDataType() != null ? infoFromModel.getVectorDataType() : VectorDataType.DEFAULT;
+                spaceType = infoFromModel.getSpaceType() != null ? infoFromModel.getSpaceType() : getDefaultSpaceType(vectorDataType);
+            } else {
+                spaceType = info.getSpaceType();
+                vectorDataType = info.getVectorDataType();
+            }
+
+            resolvedSpaceType = resolveConsistentValue(
+                resolvedSpaceType,
+                spaceType,
+                SpaceType::getValue,
+                "space type",
+                info.getFieldPath()
+            );
+
+            resolvedVectorDataType = resolveConsistentValue(
+                resolvedVectorDataType,
+                vectorDataType,
+                VectorDataType::getValue,
+                "vector data type",
+                info.getFieldPath()
+            );
+        }
+
+        return resolveFinalKnnVectorFieldInfo(userProvidedSpaceType, resolvedSpaceType, userProvidedVectorDataType, resolvedVectorDataType);
+    }
+
+    private static void retrieveFieldInfoFromModel(
+        @NonNull final Set<String> modelIds,
+        @NonNull final Client client,
+        @NonNull final ActionListener<Map<String, MMRVectorFieldInfo>> listener
+    ) {
+        Map<String, MMRVectorFieldInfo> modelIdToVectorFieldInfo = new ConcurrentHashMap<>();
+        List<String> errors = Collections.synchronizedList(new ArrayList<>());
+        AtomicInteger counter = new AtomicInteger(modelIds.size());
+
+        for (String modelId : modelIds) {
+            client.execute(GetModelAction.INSTANCE, new GetModelRequest(modelId), ActionListener.wrap((GetModelResponse response) -> {
+                SpaceType spaceTypeFromModel = null;
+                VectorDataType vectorDataTypeFromModel = null;
+                if (response != null && response.getModel() != null && response.getModel().getModelMetadata() != null) {
+                    spaceTypeFromModel = response.getModel().getModelMetadata().getSpaceType();
+                    vectorDataTypeFromModel = response.getModel().getModelMetadata().getVectorDataType();
+                }
+                modelIdToVectorFieldInfo.put(modelId, new MMRVectorFieldInfo(spaceTypeFromModel, vectorDataTypeFromModel));
+                if (counter.decrementAndGet() == 0) {
+                    listener.onResponse(modelIdToVectorFieldInfo);
+                }
+            }, (Exception e) -> {
+                errors.add(e.getMessage());
+                if (counter.decrementAndGet() == 0) {
+                    listener.onFailure(
+                        new RuntimeException(
+                            String.format(
+                                Locale.ROOT,
+                                "Failed to retrieve model(s) to resolve the space type and vector data type for the MMR query extension. Errors: %s.",
+                                String.join(", ", errors)
+                            )
+                        )
+                    );
+                }
+            }));
         }
     }
 
@@ -283,8 +377,26 @@ public class MMRUtil {
                 MMRVectorFieldInfoList
             );
 
-            // For jVector: always use field config, no model support
-            continuation.onResponse(resolvedVectorFieldInfo);
+            // Collect model IDs
+            Set<String> modelIds = MMRVectorFieldInfoList.stream()
+                .map(MMRVectorFieldInfo::getModelId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+
+            if (modelIds.isEmpty()) {
+                continuation.onResponse(resolvedVectorFieldInfo);
+            } else {
+                // Retrieve the field info from the model metadata asynchronously
+                retrieveFieldInfoFromModel(modelIds, client, ActionListener.wrap(modelIdToVectorFieldInfo -> {
+                    MMRVectorFieldInfo resolvedVectorFieldInfoFromModel = resolveVectorFieldInfoFromModel(
+                        userProvidedVectorDataType,
+                        userProvidedSpaceType,
+                        MMRVectorFieldInfoList,
+                        modelIdToVectorFieldInfo
+                    );
+                    continuation.onResponse(resolvedVectorFieldInfoFromModel);
+                }, continuation::onFailure));
+            }
         } catch (Exception e) {
             continuation.onFailure(e);
         }
@@ -329,14 +441,14 @@ public class MMRUtil {
             String part = pathParts[i];
             if (!(current instanceof Map<?, ?> map)) {
                 throw new IllegalArgumentException(
-                    String.format(Locale.ROOT, "%s: expected object at [%s], but found [%s]", baseError, part, current.getClass().getName())
+                    String.format("%s: expected object at [%s], but found [%s]", baseError, part, current.getClass().getName())
                 );
             }
 
             current = map.get(part);
             if (current == null) {
                 throw new IllegalArgumentException(
-                    String.format(Locale.ROOT, "%s: field path [%s] not found in document source.", baseError, fieldPath)
+                    String.format("%s: field path [%s] not found in document source.", baseError, fieldPath)
                 );
             }
 
@@ -360,13 +472,7 @@ public class MMRUtil {
                         }
                     } catch (Exception e) {
                         throw new IllegalArgumentException(
-                            String.format(
-                                Locale.ROOT,
-                                "%s: unexpected value at the vector field [%s]. error: %s",
-                                baseError,
-                                fieldPath,
-                                e.getMessage()
-                            ),
+                            String.format("%s: unexpected value at the vector field [%s]. error: %s", baseError, fieldPath, e.getMessage()),
                             e
                         );
                     }
@@ -376,7 +482,6 @@ public class MMRUtil {
                 }
                 throw new IllegalArgumentException(
                     String.format(
-                        Locale.ROOT,
                         "%s: expected vector (list of numbers) at field path [%s], but found type [%s]",
                         baseError,
                         fieldPath,
@@ -387,9 +492,7 @@ public class MMRUtil {
         }
 
         // Should never reach here
-        throw new IllegalStateException(
-            String.format(Locale.ROOT, "%s: unexpected error resolving field path [%s].", baseError, fieldPath)
-        );
+        throw new IllegalStateException(String.format("%s: unexpected error resolving field path [%s].", baseError, fieldPath));
     }
 
     /**
@@ -438,12 +541,7 @@ public class MMRUtil {
             String fieldType = (String) current.get(TYPE);
             if (ObjectMapper.NESTED_CONTENT_TYPE.equals(fieldType)) {
                 throw new IllegalArgumentException(
-                    String.format(
-                        Locale.ROOT,
-                        "MMR search extension cannot support the field %s because it is in the nested field %s.",
-                        fieldPath,
-                        part
-                    )
+                    String.format("MMR search extension cannot support the field %s because it is in the nested field %s.", fieldPath, part)
                 );
             }
         }

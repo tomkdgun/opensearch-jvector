@@ -18,12 +18,40 @@ public class OriginalMappingParametersTests extends KNNTestCase {
 
     public void testIsLegacy() {
         assertTrue(
-            new OriginalMappingParameters(VectorDataType.DEFAULT, 123, null, null, null, SpaceType.UNDEFINED.getValue()).isLegacyMapping()
+            new OriginalMappingParameters(
+                VectorDataType.DEFAULT,
+                123,
+                null,
+                null,
+                null,
+                null,
+                SpaceType.UNDEFINED.getValue(),
+                KNNEngine.UNDEFINED.getName()
+            ).isLegacyMapping()
         );
-
         assertFalse(
-            new OriginalMappingParameters(VectorDataType.DEFAULT, 123, null, Mode.ON_DISK.getName(), null, SpaceType.UNDEFINED.getValue())
-                .isLegacyMapping()
+            new OriginalMappingParameters(
+                VectorDataType.DEFAULT,
+                123,
+                null,
+                null,
+                null,
+                "model-id",
+                SpaceType.UNDEFINED.getValue(),
+                KNNEngine.UNDEFINED.getName()
+            ).isLegacyMapping()
+        );
+        assertFalse(
+            new OriginalMappingParameters(
+                VectorDataType.DEFAULT,
+                123,
+                null,
+                Mode.ON_DISK.getName(),
+                null,
+                null,
+                SpaceType.UNDEFINED.getValue(),
+                KNNEngine.UNDEFINED.getName()
+            ).isLegacyMapping()
         );
         assertFalse(
             new OriginalMappingParameters(
@@ -32,7 +60,9 @@ public class OriginalMappingParametersTests extends KNNTestCase {
                 null,
                 null,
                 CompressionLevel.x2.getName(),
-                SpaceType.UNDEFINED.getValue()
+                null,
+                SpaceType.UNDEFINED.getValue(),
+                KNNEngine.UNDEFINED.getName()
             ).isLegacyMapping()
         );
         assertFalse(
@@ -42,7 +72,9 @@ public class OriginalMappingParametersTests extends KNNTestCase {
                 new KNNMethodContext(KNNEngine.DEFAULT, SpaceType.L2, new MethodComponentContext(null, Collections.emptyMap())),
                 null,
                 null,
-                SpaceType.UNDEFINED.getValue()
+                null,
+                SpaceType.UNDEFINED.getValue(),
+                KNNEngine.UNDEFINED.getName()
             ).isLegacyMapping()
         );
     }

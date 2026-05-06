@@ -21,9 +21,10 @@ import org.apache.lucene.util.BytesRef;
 import org.opensearch.Version;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.knn.index.KNNSettings;
+import org.opensearch.knn.index.KnnCircuitBreakerException;
 import org.opensearch.knn.index.SpaceType;
 import org.opensearch.knn.index.VectorDataType;
-import org.opensearch.knn.index.codec.util.KNNVectorSerializerFactory;
+import org.opensearch.knn.index.codec.util.KNNVectorAsCollectionOfFloatsSerializer;
 import org.opensearch.knn.index.engine.KNNEngine;
 import org.opensearch.knn.index.engine.KNNMethodContext;
 import org.opensearch.knn.index.engine.MethodComponentContext;
@@ -32,13 +33,11 @@ import org.opensearch.knn.index.util.IndexHyperParametersUtil;
 import java.util.Arrays;
 import java.util.Map;
 
-import static org.opensearch.knn.common.KNNConstants.HNSW_ALGO_EF_CONSTRUCTION;
-import static org.opensearch.knn.common.KNNConstants.HNSW_ALGO_M;
 import static org.opensearch.knn.common.KNNConstants.KNN_ENGINE;
+import static org.opensearch.knn.common.KNNConstants.METHOD_ENCODER_PARAMETER;
 import static org.opensearch.knn.common.KNNConstants.METHOD_HNSW;
 import static org.opensearch.knn.common.KNNConstants.METHOD_PARAMETER_EF_CONSTRUCTION;
 import static org.opensearch.knn.common.KNNConstants.METHOD_PARAMETER_M;
-import static org.opensearch.knn.common.KNNConstants.METHOD_PARAMETER_SPACE_TYPE;
 
 /**
  * Utility class for KNNVectorFieldMapper
@@ -76,7 +75,7 @@ public class KNNVectorFieldMapperUtil {
      * @param vector vector to be added to stored field
      */
     public static StoredField createStoredFieldForFloatVector(String name, float[] vector) {
-        return new StoredField(name, KNNVectorSerializerFactory.getDefaultSerializer().floatToByteArray(vector));
+        return new StoredField(name, KNNVectorAsCollectionOfFloatsSerializer.INSTANCE.floatToByteArray(vector));
     }
 
     /**
@@ -87,8 +86,8 @@ public class KNNVectorFieldMapperUtil {
     public static Object deserializeStoredVector(BytesRef storedVector, VectorDataType vectorDataType) {
         if (VectorDataType.BYTE == vectorDataType || VectorDataType.BINARY == vectorDataType) {
             byte[] bytes = storedVector.bytes;
-            int[] byteAsIntArray = new int[bytes.length];
-            Arrays.setAll(byteAsIntArray, i -> bytes[i]);
+            int[] byteAsIntArray = new int[storedVector.length];
+            Arrays.setAll(byteAsIntArray, i -> bytes[i + storedVector.offset]);
             return byteAsIntArray;
         }
 
@@ -110,11 +109,13 @@ public class KNNVectorFieldMapperUtil {
     }
 
     /**
-     * Validate if plugin is enabled
+     * Validate if the circuit breaker is triggered
      */
-    static void validateIfKNNPluginEnabled() {
-        if (!KNNSettings.isKNNPluginEnabled()) {
-            throw new IllegalStateException("KNN plugin is disabled. To enable update knn.plugin.enabled setting to true");
+    static void validateIfCircuitBreakerIsNotTriggered() {
+        if (KNNSettings.isCircuitBreakerTriggered()) {
+            throw new KnnCircuitBreakerException(
+                "Parsing the created knn vector fields prior to indexing has failed as the circuit breaker triggered.  This indicates that the cluster is low on memory resources and cannot index more documents at the moment. Check _plugins/_knn/stats for the circuit breaker status."
+            );
         }
     }
 
@@ -144,45 +145,12 @@ public class KNNVectorFieldMapperUtil {
         return indexCreatedVersion != null && indexCreatedVersion.onOrAfter(Version.V_2_17_0);
     }
 
-    public static SpaceType getSpaceType(final Settings indexSettings) {
-        String spaceType = indexSettings.get(KNNSettings.INDEX_KNN_SPACE_TYPE.getKey());
-        if (spaceType == null) {
-            spaceType = KNNSettings.INDEX_KNN_DEFAULT_SPACE_TYPE;
-            log.info(
-                "[KNN] The setting \"{}\" was not set for the index. Likely caused by recent version upgrade. Setting the setting to the default value={}",
-                METHOD_PARAMETER_SPACE_TYPE,
-                spaceType
-            );
-        }
-        return SpaceType.getSpace(spaceType);
+    private static int getM() {
+        return KNNSettings.INDEX_KNN_DEFAULT_ALGO_PARAM_M;
     }
 
-    private static int getM(Settings indexSettings) {
-        String m = indexSettings.get(KNNSettings.INDEX_KNN_ALGO_PARAM_M_SETTING.getKey());
-        if (m == null) {
-            log.info(
-                "[KNN] The setting \"{}\" was not set for the index. Likely caused by recent version upgrade. Setting the setting to the default value={}",
-                HNSW_ALGO_M,
-                KNNSettings.INDEX_KNN_DEFAULT_ALGO_PARAM_M
-            );
-            return KNNSettings.INDEX_KNN_DEFAULT_ALGO_PARAM_M;
-        }
-        return Integer.parseInt(m);
-    }
-
-    private static int getEfConstruction(Settings indexSettings, Version indexVersion) {
-        final String efConstruction = indexSettings.get(KNNSettings.INDEX_KNN_ALGO_PARAM_EF_CONSTRUCTION_SETTING.getKey());
-        if (efConstruction == null) {
-            final int defaultEFConstructionValue = IndexHyperParametersUtil.getHNSWEFConstructionValue(indexVersion);
-            log.info(
-                "[KNN] The setting \"{}\" was not set for the index. Likely caused by recent version upgrade. "
-                    + "Picking up default value for the index ={}",
-                HNSW_ALGO_EF_CONSTRUCTION,
-                defaultEFConstructionValue
-            );
-            return defaultEFConstructionValue;
-        }
-        return Integer.parseInt(efConstruction);
+    private static int getEfConstruction(Version indexVersion) {
+        return IndexHyperParametersUtil.getHNSWEFConstructionValue(indexVersion);
     }
 
     static KNNMethodContext createKNNMethodContextFromLegacy(
@@ -191,17 +159,35 @@ public class KNNVectorFieldMapperUtil {
         SpaceType resolvedSpaceType
     ) {
         return new KNNMethodContext(
-            KNNEngine.LUCENE,
+            KNNEngine.NMSLIB,
             resolvedSpaceType,
             new MethodComponentContext(
                 METHOD_HNSW,
                 Map.of(
                     METHOD_PARAMETER_M,
-                    KNNVectorFieldMapperUtil.getM(indexSettings),
+                    KNNVectorFieldMapperUtil.getM(),
                     METHOD_PARAMETER_EF_CONSTRUCTION,
-                    KNNVectorFieldMapperUtil.getEfConstruction(indexSettings, indexCreatedVersion)
+                    KNNVectorFieldMapperUtil.getEfConstruction(indexCreatedVersion)
                 )
             )
         );
+    }
+
+    public static String getEncoderName(final KNNMethodContext methodContext) {
+        if (methodContext == null) {
+            return null;
+        }
+
+        final MethodComponentContext methodComponentContext = methodContext.getMethodComponentContext();
+
+        // We only support Flat and SQ encoder for HNSW.
+        final Map<String, Object> parameters = methodComponentContext.getParameters();
+        final Object methodComponentContextObj = parameters.get(METHOD_ENCODER_PARAMETER);
+        if ((methodComponentContextObj instanceof MethodComponentContext) == false) {
+            return null;
+        }
+
+        // Check whether HNSW encoding is supported.
+        return ((MethodComponentContext) methodComponentContextObj).getName();
     }
 }

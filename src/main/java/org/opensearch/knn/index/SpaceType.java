@@ -11,6 +11,8 @@
 
 package org.opensearch.knn.index;
 
+import org.apache.lucene.index.VectorSimilarityFunction;
+
 import java.util.Arrays;
 import java.util.Locale;
 
@@ -36,11 +38,17 @@ public enum SpaceType {
         }
 
         @Override
+        public KNNVectorSimilarityFunction getKnnVectorSimilarityFunction() {
+            // not supported
+            return null;
+        }
+
+        @Override
         public void validateVectorDataType(VectorDataType vectorDataType) {
             throw new IllegalStateException("Unsupported method");
         }
     },
-    L2("l2") {
+    L2("l2", SpaceType.GENERIC_SCORE_TRANSLATION) {
         @Override
         public float scoreTranslation(float rawScore) {
             return 1 / (1 + rawScore);
@@ -59,7 +67,7 @@ public enum SpaceType {
             return 1 / score - 1;
         }
     },
-    COSINESIMIL("cosinesimil") {
+    COSINESIMIL("cosinesimil", "`Math.max((2.0F - rawScore) / 2.0F, 0.0F)`") {
         /**
          * Cosine similarity has range of [-1, 1] where -1 represents vectors are at diametrically opposite, and 1 is where
          * they are identical in direction and perfectly similar. In Lucene, scores have to be in the range of [0, Float.MAX_VALUE].
@@ -100,16 +108,27 @@ public enum SpaceType {
             }
         }
     },
-    L1("l1") {
+    L1("l1", SpaceType.GENERIC_SCORE_TRANSLATION) {
         @Override
         public float scoreTranslation(float rawScore) {
             return 1 / (1 + rawScore);
         }
+
+        @Override
+        public KNNVectorSimilarityFunction getKnnVectorSimilarityFunction() {
+            // not supported
+            return null;
+        }
     },
-    LINF("linf") {
+    LINF("linf", SpaceType.GENERIC_SCORE_TRANSLATION) {
         @Override
         public float scoreTranslation(float rawScore) {
             return 1 / (1 + rawScore);
+        }
+
+        @Override
+        public KNNVectorSimilarityFunction getKnnVectorSimilarityFunction() {
+            return null;
         }
     },
     INNER_PRODUCT("innerproduct") {
@@ -130,11 +149,16 @@ public enum SpaceType {
         }
 
         @Override
+        public String explainScoreTranslation(float rawScore) {
+            return rawScore >= 0 ? GENERIC_SCORE_TRANSLATION : "`-rawScore + 1`";
+        }
+
+        @Override
         public KNNVectorSimilarityFunction getKnnVectorSimilarityFunction() {
             return KNNVectorSimilarityFunction.MAXIMUM_INNER_PRODUCT;
         }
     },
-    HAMMING("hamming") {
+    HAMMING("hamming", SpaceType.GENERIC_SCORE_TRANSLATION) {
         @Override
         public float scoreTranslation(float rawScore) {
             return 1 / (1 + rawScore);
@@ -158,6 +182,7 @@ public enum SpaceType {
         public KNNVectorSimilarityFunction getKnnVectorSimilarityFunction() {
             return KNNVectorSimilarityFunction.HAMMING;
         }
+
     };
 
     public static SpaceType DEFAULT = L2;
@@ -169,24 +194,35 @@ public enum SpaceType {
         .collect(Collectors.toList())
         .toArray(new String[0]);
 
+    private static final String GENERIC_SCORE_TRANSLATION = "`1 / (1 + rawScore)`";
     private final String value;
+    private final String explanationFormula;
 
     SpaceType(String value) {
         this.value = value;
+        this.explanationFormula = null;
+    }
+
+    SpaceType(String value, String explanationFormula) {
+        this.value = value;
+        this.explanationFormula = explanationFormula;
     }
 
     public abstract float scoreTranslation(float rawScore);
+
+    public String explainScoreTranslation(float rawScore) {
+        if (explanationFormula != null) {
+            return explanationFormula;
+        }
+        throw new UnsupportedOperationException("explainScoreTranslation is not defined for this space type.");
+    }
 
     /**
      * Get KNNVectorSimilarityFunction that maps to this SpaceType
      *
      * @return KNNVectorSimilarityFunction
      */
-    public KNNVectorSimilarityFunction getKnnVectorSimilarityFunction() {
-        throw new UnsupportedOperationException(
-            String.format(Locale.ROOT, "Space [%s] does not have a knn vector similarity function", getValue())
-        );
-    }
+    public abstract KNNVectorSimilarityFunction getKnnVectorSimilarityFunction();
 
     /**
      * Validate if the given byte vector is supported by this space type
@@ -248,6 +284,23 @@ public enum SpaceType {
         );
     }
 
+    public static SpaceType getSpace(VectorSimilarityFunction similarityFunction) {
+        for (SpaceType currentSpaceType : SpaceType.values()) {
+            KNNVectorSimilarityFunction knnSimilarityFunction = currentSpaceType.getKnnVectorSimilarityFunction();
+            if (knnSimilarityFunction != null && knnSimilarityFunction.getVectorSimilarityFunction() == similarityFunction) {
+                return currentSpaceType;
+            }
+        }
+        throw new IllegalArgumentException(
+            String.format(
+                Locale.ROOT,
+                "Unable to find space type for similarity function : %s . Valid values are: %s",
+                similarityFunction,
+                Arrays.toString(KNNVectorSimilarityFunction.values())
+            )
+        );
+    }
+
     /**
      * Translate a score to a distance for this space type
      *
@@ -255,8 +308,6 @@ public enum SpaceType {
      * @return translated distance
      */
     public float scoreToDistanceTranslation(float score) {
-        throw new UnsupportedOperationException(
-            String.format(Locale.ROOT, "Space [%s] does not have a score to distance translation", getValue())
-        );
+        throw new UnsupportedOperationException(String.format("Space [%s] does not have a score to distance translation", getValue()));
     }
 }

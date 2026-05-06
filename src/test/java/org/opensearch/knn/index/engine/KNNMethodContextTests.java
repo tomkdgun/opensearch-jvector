@@ -29,8 +29,11 @@ import static org.opensearch.knn.common.KNNConstants.METHOD_PARAMETER_SPACE_TYPE
 
 public class KNNMethodContextTests extends KNNTestCase {
 
+    /**
+     * Test reading from and writing to streams
+     */
     public void testStreams() throws IOException {
-        KNNEngine knnEngine = KNNEngine.LUCENE;
+        KNNEngine knnEngine = KNNEngine.FAISS;
         SpaceType spaceType = SpaceType.INNER_PRODUCT;
         String name = "test-name";
         Map<String, Object> parameters = ImmutableMap.of("test-p-1", 10, "test-p-2", "string-p");
@@ -47,24 +50,36 @@ public class KNNMethodContextTests extends KNNTestCase {
         assertEquals(original, copy);
     }
 
+    /**
+     * Test method component getter
+     */
     public void testGetMethodComponent() {
         MethodComponentContext methodComponent = new MethodComponentContext("test-method", Collections.emptyMap());
         KNNMethodContext knnMethodContext = new KNNMethodContext(KNNEngine.DEFAULT, SpaceType.DEFAULT, methodComponent);
         assertEquals(methodComponent, knnMethodContext.getMethodComponentContext());
     }
 
+    /**
+     * Test engine getter
+     */
     public void testGetEngine() {
         MethodComponentContext methodComponent = new MethodComponentContext("test-method", Collections.emptyMap());
         KNNMethodContext knnMethodContext = new KNNMethodContext(KNNEngine.DEFAULT, SpaceType.DEFAULT, methodComponent);
         assertEquals(KNNEngine.DEFAULT, knnMethodContext.getKnnEngine());
     }
 
+    /**
+     * Test spaceType getter
+     */
     public void testGetSpaceType() {
         MethodComponentContext methodComponent = new MethodComponentContext("test-method", Collections.emptyMap());
         KNNMethodContext knnMethodContext = new KNNMethodContext(KNNEngine.DEFAULT, SpaceType.L1, methodComponent);
         assertEquals(SpaceType.L1, knnMethodContext.getSpaceType());
     }
 
+    /**
+     * Test context method parsing when input is invalid
+     */
     public void testParse_invalid() throws IOException {
         // Invalid input type
         Integer invalidIn = 12;
@@ -117,6 +132,9 @@ public class KNNMethodContextTests extends KNNTestCase {
         expectThrows(MapperParsingException.class, () -> MethodComponentContext.parse(in7));
     }
 
+    /**
+     * Test context method parsing when parameters are set to null
+     */
     public void testParse_nullParameters() throws IOException {
         String methodName = "test-method";
         XContentBuilder xContentBuilder = XContentFactory.jsonBuilder()
@@ -129,6 +147,9 @@ public class KNNMethodContextTests extends KNNTestCase {
         assertTrue(knnMethodContext.getMethodComponentContext().getParameters().isEmpty());
     }
 
+    /**
+     * Test context method parsing when input is valid
+     */
     public void testParse_valid() throws IOException {
         // Simple method with only name set
         String methodName = "test-method";
@@ -137,7 +158,7 @@ public class KNNMethodContextTests extends KNNTestCase {
         Map<String, Object> in = xContentBuilderToMap(xContentBuilder);
         KNNMethodContext knnMethodContext = KNNMethodContext.parse(in);
 
-        assertEquals(KNNEngine.DEFAULT, knnMethodContext.getKnnEngine());
+        assertEquals(KNNEngine.UNDEFINED, knnMethodContext.getKnnEngine());
         assertEquals(SpaceType.UNDEFINED, knnMethodContext.getSpaceType());
         assertEquals(methodName, knnMethodContext.getMethodComponentContext().getName());
         assertTrue(knnMethodContext.getMethodComponentContext().getParameters().isEmpty());
@@ -186,6 +207,9 @@ public class KNNMethodContextTests extends KNNTestCase {
         assertEquals(methodParameterValue2, knnMethodContext.getMethodComponentContext().getParameters().get(methodParameterKey2));
     }
 
+    /**
+     * Test toXContent method
+     */
     public void testToXContent() throws IOException {
         String methodName = "test-method";
         String spaceType = SpaceType.L2.getValue();
@@ -255,16 +279,33 @@ public class KNNMethodContextTests extends KNNTestCase {
         assertNotEquals(methodContext1.hashCode(), methodContext5.hashCode());
     }
 
+    public void testValidateVectorDataType_whenBinaryFaissHNSW_thenValid() {
+        validateValidateVectorDataType(KNNEngine.FAISS, KNNConstants.METHOD_HNSW, VectorDataType.BINARY, SpaceType.HAMMING, null);
+    }
+
+    public void testValidateVectorDataType_whenBinaryNonFaiss_thenException() {
+        validateValidateVectorDataType(
+            KNNEngine.NMSLIB,
+            KNNConstants.METHOD_HNSW,
+            VectorDataType.BINARY,
+            SpaceType.HAMMING,
+            "UnsupportedMethod"
+        );
+    }
+
     public void testValidateVectorDataType_whenByte_thenValid() {
-        // LUCENE supports BYTE with hnsw method
         validateValidateVectorDataType(KNNEngine.LUCENE, KNNConstants.METHOD_HNSW, VectorDataType.BYTE, SpaceType.L2, null);
+        validateValidateVectorDataType(KNNEngine.FAISS, KNNConstants.METHOD_HNSW, VectorDataType.BYTE, SpaceType.L2, null);
+    }
+
+    public void testValidateVectorDataType_whenByte_thenException() {
+        validateValidateVectorDataType(KNNEngine.NMSLIB, KNNConstants.METHOD_IVF, VectorDataType.BYTE, SpaceType.L2, "UnsupportedMethod");
     }
 
     public void testValidateVectorDataType_whenFloat_thenValid() {
-        // LUCENE supports FLOAT with hnsw method
+        validateValidateVectorDataType(KNNEngine.FAISS, KNNConstants.METHOD_HNSW, VectorDataType.FLOAT, SpaceType.L2, null);
         validateValidateVectorDataType(KNNEngine.LUCENE, KNNConstants.METHOD_HNSW, VectorDataType.FLOAT, SpaceType.L2, null);
-        // JVECTOR supports FLOAT with diskann method
-        validateValidateVectorDataType(KNNEngine.JVECTOR, KNNConstants.DISK_ANN, VectorDataType.FLOAT, SpaceType.L2, null);
+        validateValidateVectorDataType(KNNEngine.NMSLIB, KNNConstants.METHOD_HNSW, VectorDataType.FLOAT, SpaceType.L2, null);
     }
 
     public void testWriteTo_withNullParameters() throws IOException {

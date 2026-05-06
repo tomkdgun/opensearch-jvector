@@ -33,7 +33,6 @@ public class KNNScoringUtil {
         Objects.requireNonNull(inputVector);
         if (queryVector.length != inputVector.length) {
             String errorMessage = String.format(
-                Locale.ROOT,
                 "query vector dimension mismatch. Expected: %d, Given: %d",
                 inputVector.length,
                 queryVector.length
@@ -54,7 +53,6 @@ public class KNNScoringUtil {
         Objects.requireNonNull(inputVector);
         if (queryVector.length != inputVector.length) {
             String errorMessage = String.format(
-                Locale.ROOT,
                 "query vector dimension mismatch. Expected: %d, Given: %d",
                 inputVector.length,
                 queryVector.length
@@ -101,6 +99,102 @@ public class KNNScoringUtil {
         return VectorUtil.squareDistance(queryVector, inputVector);
     }
 
+    /**
+     * This method calculates L2 squared distance between byte query vector
+     * and byte input vector
+     *
+     * @param queryVector byte query vector
+     * @param inputVector byte input vector
+     * @return L2 score
+     */
+    public static float l2Squared(byte[] queryVector, byte[] inputVector) {
+        return VectorUtil.squareDistance(queryVector, inputVector);
+    }
+
+    /**
+     * Calculates the L2 squared distance between a float query vector and a binary document vector using ADC (Asymmetric Distance Computation).
+     * This method implements a specialized version of L2 distance calculation where one vector is in binary format (compressed)
+     * and the other is in float format (uncompressed).
+     *
+     * TODO: For now this will be very inefficient. We can in the future optimize through the following:
+     * Use FloatVector.SPECIES_PREFERRED for SIMD processing in chunks with reduceLanes(),
+     * Configure build.gradle with --add-modules jdk.incubator.vector --enable-preview flags into the VectorUtils class.
+     *
+     * @param queryVector The uncompressed query vector in float format
+     * @param inputVector The compressed document vector in binary format, where each bit represents a dimension
+     * @return The L2 squared distance between the two vectors. Lower values indicate closer vectors.
+     * @throws IllegalArgumentException if queryVector length is not compatible with inputVector length (queryVector.length != inputVector.length * 8)
+     */
+    public static float l2SquaredADC(float[] queryVector, byte[] inputVector) {
+        // we cannot defer to VectorUtil as it does not support ADC.
+        // TODO: add batching logic similar to C++ to improve performance.
+        float score = 0;
+
+        for (int i = 0; i < queryVector.length; ++i) {
+            int byteIndex = i / 8;
+            int bitOffset = 7 - (i % 8);
+            int bitValue = (inputVector[byteIndex] >> bitOffset) & 1;
+
+            // Calculate squared difference
+            float diff = bitValue - queryVector[i];
+            score += diff * diff;
+        }
+        return score;
+    }
+
+    /**
+     * Calculates the inner product similarity between a float query vector and a binary document vector using ADC
+     * (Asymmetric Distance Computation). This method is useful for similarity searches where one vector is compressed
+     * in binary format and the other remains in float format.
+     *
+     * The inner product is calculated by summing the products of corresponding elements, where the binary vector's
+     * elements are interpreted as 0 or 1.
+     *
+     * TODO: For now this will be very inefficient. We can in the future optimize through the following:
+     * Use FloatVector.SPECIES_PREFERRED for SIMD processing in chunks with reduceLanes(),
+     * Configure build.gradle with --add-modules jdk.incubator.vector --enable-preview flags into the VectorUtils class.
+     *
+     * @param queryVector The uncompressed query vector in float format
+     * @param inputVector The compressed document vector in binary format, where each bit represents a dimension
+     * @return The inner product similarity score between the two vectors. Higher values indicate more similar vectors.
+     * @throws IllegalArgumentException if queryVector length is not compatible with inputVector length (queryVector.length != inputVector.length * 8)
+     */
+    public static float innerProductADC(float[] queryVector, byte[] inputVector) {
+        float score = 0;
+
+        for (int i = 0; i < queryVector.length; ++i) {
+            // Extract the bit for this dimension
+            int byteIndex = i / 8;
+            int bitOffset = 7 - (i % 8);
+            int bitValue = (inputVector[byteIndex] >> bitOffset) & 1;
+
+            // Calculate product and accumulate
+            score += bitValue * queryVector[i];
+        }
+        return score;
+    }
+
+    /**
+     * Computes the similarity score between a float query vector and a quantized byte document vector using ADC.
+     * This method applies the appropriate distance metric based on the space type and returns a similarity score.
+     *
+     * @param queryVector the full-precision float query vector
+     * @param documentVector the quantized byte document vector
+     * @param spaceType the distance metric to use
+     * @return the similarity score
+     * @throws UnsupportedOperationException if the space type is not supported for ADC
+     */
+    public static float scoreWithADC(float[] queryVector, byte[] documentVector, SpaceType spaceType) {
+        if (spaceType.equals(SpaceType.L2)) {
+            return SpaceType.L2.scoreTranslation(l2SquaredADC(queryVector, documentVector));
+        } else if (spaceType.equals(SpaceType.INNER_PRODUCT)) {
+            return SpaceType.INNER_PRODUCT.scoreTranslation((-1 * innerProductADC(queryVector, documentVector)));
+        } else if (spaceType.equals(SpaceType.COSINESIMIL)) {
+            return SpaceType.COSINESIMIL.scoreTranslation(1 - innerProductADC(queryVector, documentVector));
+        }
+        throw new UnsupportedOperationException("Space type " + spaceType.getValue() + " is not supported for ADC");
+    }
+
     private static float[] toFloat(final List<Number> inputVector, final VectorDataType vectorDataType) {
         Objects.requireNonNull(inputVector);
         float[] value = new float[inputVector.size()];
@@ -137,6 +231,23 @@ public class KNNScoringUtil {
      * @return cosine score
      */
     public static float cosinesimil(float[] queryVector, float[] inputVector) {
+        requireEqualDimension(queryVector, inputVector);
+        try {
+            return VectorUtil.cosine(queryVector, inputVector);
+        } catch (IllegalArgumentException | AssertionError e) {
+            logger.debug("Invalid vectors for cosine. Returning minimum score to put this result to end");
+            return 0.0f;
+        }
+    }
+
+    /**
+     * This method calculates cosine similarity
+     *
+     * @param queryVector byte query vector
+     * @param inputVector byte input vector
+     * @return cosine score
+     */
+    public static float cosinesimil(byte[] queryVector, byte[] inputVector) {
         requireEqualDimension(queryVector, inputVector);
         try {
             return VectorUtil.cosine(queryVector, inputVector);
@@ -225,6 +336,24 @@ public class KNNScoringUtil {
     }
 
     /**
+     * This method calculates L1 distance between byte query vector
+     * and byte input vector
+     *
+     * @param queryVector byte query vector
+     * @param inputVector byte input vector
+     * @return L1 score
+     */
+    public static float l1Norm(byte[] queryVector, byte[] inputVector) {
+        requireEqualDimension(queryVector, inputVector);
+        float distance = 0;
+        for (int i = 0; i < inputVector.length; i++) {
+            float diff = queryVector[i] - inputVector[i];
+            distance += Math.abs(diff);
+        }
+        return distance;
+    }
+
+    /**
      * This method calculates L-inf distance between query vector
      * and input vector
      *
@@ -243,6 +372,24 @@ public class KNNScoringUtil {
     }
 
     /**
+     * This method calculates L-inf distance between byte query vector
+     * and input vector
+     *
+     * @param queryVector byte query vector
+     * @param inputVector byte input vector
+     * @return L-inf score
+     */
+    public static float lInfNorm(byte[] queryVector, byte[] inputVector) {
+        requireEqualDimension(queryVector, inputVector);
+        float distance = 0;
+        for (int i = 0; i < inputVector.length; i++) {
+            float diff = queryVector[i] - inputVector[i];
+            distance = Math.max(Math.abs(diff), distance);
+        }
+        return distance;
+    }
+
+    /**
      * This method calculates dot product distance between query vector
      * and input vector
      *
@@ -251,6 +398,19 @@ public class KNNScoringUtil {
      * @return dot product score
      */
     public static float innerProduct(float[] queryVector, float[] inputVector) {
+        requireEqualDimension(queryVector, inputVector);
+        return VectorUtil.dotProduct(queryVector, inputVector);
+    }
+
+    /**
+     * This method calculates dot product distance between byte query vector
+     * and byte input vector
+     *
+     * @param queryVector query vector
+     * @param inputVector input vector
+     * @return dot product score
+     */
+    public static float innerProduct(byte[] queryVector, byte[] inputVector) {
         requireEqualDimension(queryVector, inputVector);
         return VectorUtil.dotProduct(queryVector, inputVector);
     }
@@ -277,9 +437,13 @@ public class KNNScoringUtil {
      * @param docValues   script doc values
      * @return L2 score
      */
-    public static float l2Squared(List<Number> queryVector, KNNVectorScriptDocValues docValues) {
-        requireNonBinaryType("l2Squared", docValues.getVectorDataType());
-        return l2Squared(toFloat(queryVector, docValues.getVectorDataType()), docValues.getValue());
+    public static float l2Squared(List<Number> queryVector, KNNVectorScriptDocValues<?> docValues) {
+        final VectorDataType vectorDataType = docValues.getVectorDataType();
+        requireNonBinaryType("l2Squared", vectorDataType);
+        if (VectorDataType.FLOAT == vectorDataType) {
+            return l2Squared(toFloat(queryVector, docValues.getVectorDataType()), (float[]) docValues.getValue());
+        }
+        return l2Squared(toByte(queryVector, docValues.getVectorDataType()), (byte[]) docValues.getValue());
     }
 
     /**
@@ -298,9 +462,13 @@ public class KNNScoringUtil {
      * @param docValues   script doc values
      * @return L-inf score
      */
-    public static float lInfNorm(List<Number> queryVector, KNNVectorScriptDocValues docValues) {
-        requireNonBinaryType("lInfNorm", docValues.getVectorDataType());
-        return lInfNorm(toFloat(queryVector, docValues.getVectorDataType()), docValues.getValue());
+    public static float lInfNorm(List<Number> queryVector, KNNVectorScriptDocValues<?> docValues) {
+        final VectorDataType vectorDataType = docValues.getVectorDataType();
+        requireNonBinaryType("lInfNorm", vectorDataType);
+        if (VectorDataType.FLOAT == vectorDataType) {
+            return lInfNorm(toFloat(queryVector, docValues.getVectorDataType()), (float[]) docValues.getValue());
+        }
+        return lInfNorm(toByte(queryVector, docValues.getVectorDataType()), (byte[]) docValues.getValue());
     }
 
     /**
@@ -319,9 +487,13 @@ public class KNNScoringUtil {
      * @param docValues   script doc values
      * @return L1 score
      */
-    public static float l1Norm(List<Number> queryVector, KNNVectorScriptDocValues docValues) {
-        requireNonBinaryType("l1Norm", docValues.getVectorDataType());
-        return l1Norm(toFloat(queryVector, docValues.getVectorDataType()), docValues.getValue());
+    public static float l1Norm(List<Number> queryVector, KNNVectorScriptDocValues<?> docValues) {
+        final VectorDataType vectorDataType = docValues.getVectorDataType();
+        requireNonBinaryType("l1Norm", vectorDataType);
+        if (VectorDataType.FLOAT == vectorDataType) {
+            return l1Norm(toFloat(queryVector, docValues.getVectorDataType()), (float[]) docValues.getValue());
+        }
+        return l1Norm(toByte(queryVector, docValues.getVectorDataType()), (byte[]) docValues.getValue());
     }
 
     /**
@@ -340,9 +512,13 @@ public class KNNScoringUtil {
      * @param docValues   script doc values
      * @return inner product score
      */
-    public static float innerProduct(List<Number> queryVector, KNNVectorScriptDocValues docValues) {
-        requireNonBinaryType("innerProduct", docValues.getVectorDataType());
-        return innerProduct(toFloat(queryVector, docValues.getVectorDataType()), docValues.getValue());
+    public static float innerProduct(List<Number> queryVector, KNNVectorScriptDocValues<?> docValues) {
+        final VectorDataType vectorDataType = docValues.getVectorDataType();
+        requireNonBinaryType("innerProduct", vectorDataType);
+        if (VectorDataType.FLOAT == vectorDataType) {
+            return innerProduct(toFloat(queryVector, docValues.getVectorDataType()), (float[]) docValues.getValue());
+        }
+        return innerProduct(toByte(queryVector, docValues.getVectorDataType()), (byte[]) docValues.getValue());
     }
 
     /**
@@ -361,11 +537,18 @@ public class KNNScoringUtil {
      * @param docValues   script doc values
      * @return cosine score
      */
-    public static float cosineSimilarity(List<Number> queryVector, KNNVectorScriptDocValues docValues) {
-        requireNonBinaryType("cosineSimilarity", docValues.getVectorDataType());
-        float[] inputVector = toFloat(queryVector, docValues.getVectorDataType());
-        SpaceType.COSINESIMIL.validateVector(inputVector);
-        return cosinesimil(inputVector, docValues.getValue());
+    public static float cosineSimilarity(List<Number> queryVector, KNNVectorScriptDocValues<?> docValues) {
+        final VectorDataType vectorDataType = docValues.getVectorDataType();
+        requireNonBinaryType("cosineSimilarity", vectorDataType);
+        if (VectorDataType.FLOAT == vectorDataType) {
+            float[] inputVector = toFloat(queryVector, docValues.getVectorDataType());
+            SpaceType.COSINESIMIL.validateVector(inputVector);
+            return cosinesimil(inputVector, (float[]) docValues.getValue());
+        } else {
+            byte[] inputVector = toByte(queryVector, docValues.getVectorDataType());
+            SpaceType.COSINESIMIL.validateVector(inputVector);
+            return cosinesimil(inputVector, (byte[]) docValues.getValue());
+        }
     }
 
     /**
@@ -385,11 +568,21 @@ public class KNNScoringUtil {
      * @param queryVectorMagnitude the magnitude of the query vector.
      * @return cosine score
      */
-    public static float cosineSimilarity(List<Number> queryVector, KNNVectorScriptDocValues docValues, Number queryVectorMagnitude) {
-        requireNonBinaryType("cosineSimilarity", docValues.getVectorDataType());
+    public static float cosineSimilarity(List<Number> queryVector, KNNVectorScriptDocValues<?> docValues, Number queryVectorMagnitude) {
+        final VectorDataType vectorDataType = docValues.getVectorDataType();
+        requireNonBinaryType("cosineSimilarity", vectorDataType);
         float[] inputVector = toFloat(queryVector, docValues.getVectorDataType());
         SpaceType.COSINESIMIL.validateVector(inputVector);
-        return cosinesimilOptimized(inputVector, docValues.getValue(), queryVectorMagnitude.floatValue());
+        if (VectorDataType.FLOAT == vectorDataType) {
+            return cosinesimilOptimized(inputVector, (float[]) docValues.getValue(), queryVectorMagnitude.floatValue());
+        } else {
+            byte[] docVectorInByte = (byte[]) docValues.getValue();
+            float[] docVectorInFloat = new float[docVectorInByte.length];
+            for (int i = 0; i < docVectorInByte.length; i++) {
+                docVectorInFloat[i] = docVectorInByte[i];
+            }
+            return cosinesimilOptimized(inputVector, docVectorInFloat, queryVectorMagnitude.floatValue());
+        }
     }
 
     /**
@@ -408,17 +601,9 @@ public class KNNScoringUtil {
      * @param docValues            script doc values
      * @return hamming score
      */
-    public static float hamming(List<Number> queryVector, KNNVectorScriptDocValues docValues) {
+    public static float hamming(List<Number> queryVector, KNNVectorScriptDocValues<?> docValues) {
         requireBinaryType("hamming", docValues.getVectorDataType());
         byte[] queryVectorInByte = toByte(queryVector, docValues.getVectorDataType());
-
-        // TODO Optimization need be done for doc value to return byte[] instead of float[]
-        float[] docVectorInFloat = docValues.getValue();
-        byte[] docVectorInByte = new byte[docVectorInFloat.length];
-        for (int i = 0; i < docVectorInByte.length; i++) {
-            docVectorInByte[i] = (byte) docVectorInFloat[i];
-        }
-
-        return calculateHammingBit(queryVectorInByte, docVectorInByte);
+        return calculateHammingBit(queryVectorInByte, (byte[]) docValues.getValue());
     }
 }

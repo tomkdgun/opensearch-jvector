@@ -18,7 +18,7 @@ import lombok.experimental.UtilityClass;
  * </p>
  *
  * <p>
- * This class is marked as a utility class using Lombok's {@link UtilityClass} annotation,
+ * This class is marked as a utility class using Lombok's {@link lombok.experimental.UtilityClass} annotation,
  * making it a singleton and preventing instantiation.
  * </p>
  */
@@ -96,7 +96,6 @@ class BitPacker {
      */
     void quantizeAndPackBits(final float[] vector, final float[][] thresholds, final int bitsPerCoordinate, byte[] packedBits) {
         int vectorLength = vector.length;
-
         for (int i = 0; i < bitsPerCoordinate; i++) {
             for (int j = 0; j < vectorLength; j++) {
                 if (vector[j] > thresholds[i][j]) {

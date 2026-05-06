@@ -8,11 +8,14 @@ package org.opensearch.knn.quantization.models.quantizationState;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import lombok.Builder;
+import lombok.NonNull;
 import org.apache.lucene.util.RamUsageEstimator;
 import org.opensearch.Version;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
 import org.opensearch.knn.quantization.models.quantizationParams.ScalarQuantizationParams;
+import static org.opensearch.knn.common.KNNConstants.BYTE_ALIGNMENT_MASK;
 
 import java.io.IOException;
 
@@ -21,9 +24,12 @@ import java.io.IOException;
  * including the thresholds used for quantization.
  */
 @Getter
-@NoArgsConstructor // No-argument constructor for deserialization
+@Builder
 @AllArgsConstructor
+@NoArgsConstructor(force = true) // No-argument constructor for deserialization
 public final class MultiBitScalarQuantizationState implements QuantizationState {
+
+    @NonNull
     private ScalarQuantizationParams quantizationParams;
     /**
      * The threshold values for multi-bit quantization, organized as a 2D array
@@ -41,7 +47,14 @@ public final class MultiBitScalarQuantizationState implements QuantizationState 
      *
      * Each column represents the threshold for a specific dimension in the vector space.
      */
+    @NonNull
     private float[][] thresholds;
+
+    /**
+     * Rotation matrix used if random rotation is enabled.
+     */
+    @Builder.Default
+    private float[][] rotationMatrix = null;
 
     @Override
     public ScalarQuantizationParams getQuantizationParams() {
@@ -63,6 +76,19 @@ public final class MultiBitScalarQuantizationState implements QuantizationState 
         for (float[] row : thresholds) {
             out.writeFloatArray(row); // Write each row as a float array
         }
+
+        if (Version.CURRENT.onOrAfter(Version.V_3_2_0)) {
+            if (rotationMatrix != null) {
+                out.writeBoolean(true);
+                out.writeVInt(rotationMatrix.length);
+                for (float[] row : rotationMatrix) {
+                    out.writeFloatArray(row);
+                }
+            } else {
+                out.writeBoolean(false);
+            }
+        }
+
     }
 
     /**
@@ -75,10 +101,21 @@ public final class MultiBitScalarQuantizationState implements QuantizationState 
     public MultiBitScalarQuantizationState(StreamInput in) throws IOException {
         int version = in.readVInt(); // Read the version
         this.quantizationParams = new ScalarQuantizationParams(in, version);
+
         int rows = in.readVInt(); // Read the number of rows
         this.thresholds = new float[rows][];
         for (int i = 0; i < rows; i++) {
             this.thresholds[i] = in.readFloatArray(); // Read each row as a float array
+        }
+
+        if (Version.fromId(version).onOrAfter(Version.V_3_2_0)) {
+            if (in.readBoolean()) {
+                int dims = in.readVInt();
+                this.rotationMatrix = new float[dims][];
+                for (int i = 0; i < dims; i++) {
+                    this.rotationMatrix[i] = in.readFloatArray();
+                }
+            }
         }
     }
 
@@ -139,7 +176,8 @@ public final class MultiBitScalarQuantizationState implements QuantizationState 
         }
 
         // Calculate the number of bytes required for multi-bit quantization
-        return thresholds.length * thresholds[0].length;
+        int totalBits = thresholds.length * thresholds[0].length;
+        return (totalBits + BYTE_ALIGNMENT_MASK) / Byte.SIZE;
     }
 
     @Override
@@ -151,13 +189,13 @@ public final class MultiBitScalarQuantizationState implements QuantizationState 
             throw new IllegalStateException("Error in getting Dimension: The thresholds array is not initialized.");
         }
         int originalDimensions = thresholds[0].length;
+        int bitsPerDimension = thresholds.length;
 
-        // Align the original dimensions to the next multiple of 8 for each bit level
-        int alignedDimensions = (originalDimensions + 7) & ~7;
+        // First multiply by bits, then align to multiple of 8 for binary dimension
+        int totalBinaryDimensions = originalDimensions * bitsPerDimension;
+        int alignedBinaryDimensions = (totalBinaryDimensions + BYTE_ALIGNMENT_MASK) & ~BYTE_ALIGNMENT_MASK;
 
-        // The final dimension count should consider the bit levels
-        return thresholds.length * alignedDimensions;
-
+        return alignedBinaryDimensions;
     }
 
     /**
@@ -174,6 +212,13 @@ public final class MultiBitScalarQuantizationState implements QuantizationState 
         size += RamUsageEstimator.shallowSizeOf(thresholds); // shallow size of the 2D array (array of references to rows)
         for (float[] row : thresholds) {
             size += RamUsageEstimator.sizeOf(row); // size of each row in the 2D array
+        }
+
+        if (rotationMatrix != null) {
+            size += RamUsageEstimator.shallowSizeOf(rotationMatrix);
+            for (float[] row : rotationMatrix) {
+                size += RamUsageEstimator.sizeOf(row);
+            }
         }
         return size;
     }

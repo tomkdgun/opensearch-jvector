@@ -8,8 +8,6 @@ package org.opensearch.knn.bwc;
 import org.opensearch.knn.index.SpaceType;
 import org.opensearch.knn.index.engine.KNNEngine;
 
-import static org.opensearch.knn.common.KNNConstants.DISK_ANN;
-
 public class PainlessScriptScoringIT extends AbstractRestartUpgradeTestCase {
     private static final String TEST_FIELD = "test-field";
     private static final int DIMENSIONS = 5;
@@ -21,7 +19,7 @@ public class PainlessScriptScoringIT extends AbstractRestartUpgradeTestCase {
     // KNN painless script scoring for space_type "l2"
     public void testKNNL2PainlessScriptScore() throws Exception {
         if (isRunningAgainstOldCluster()) {
-            createKnnIndex(testIndex, createKNNDefaultScriptScoreSettings(), createKnnScriptScoreIndexMapping(TEST_FIELD, DIMENSIONS));
+            createKnnIndex(testIndex, createKNNDefaultScriptScoreSettings(), createKnnIndexMapping(TEST_FIELD, DIMENSIONS));
             addKNNDocs(testIndex, TEST_FIELD, DIMENSIONS, DOC_ID, NUM_DOCS);
         } else {
             DOC_ID = NUM_DOCS;
@@ -41,7 +39,7 @@ public class PainlessScriptScoringIT extends AbstractRestartUpgradeTestCase {
     // KNN painless script scoring for space_type "l1"
     public void testKNNL1PainlessScriptScore() throws Exception {
         if (isRunningAgainstOldCluster()) {
-            createKnnIndex(testIndex, createKNNDefaultScriptScoreSettings(), createKnnScriptScoreIndexMapping(TEST_FIELD, DIMENSIONS));
+            createKnnIndex(testIndex, createKNNDefaultScriptScoreSettings(), createKnnIndexMapping(TEST_FIELD, DIMENSIONS));
             addKNNDocs(testIndex, TEST_FIELD, DIMENSIONS, DOC_ID, NUM_DOCS);
         } else {
             DOC_ID = NUM_DOCS;
@@ -63,7 +61,7 @@ public class PainlessScriptScoringIT extends AbstractRestartUpgradeTestCase {
             createKnnIndex(
                 testIndex,
                 createKNNDefaultScriptScoreSettings(),
-                createKnnIndexMapping(TEST_FIELD, DIMENSIONS, DISK_ANN, KNNEngine.JVECTOR.getName(), SpaceType.DEFAULT.getValue(), false)
+                createKnnIndexMapping(TEST_FIELD, DIMENSIONS, "hnsw", KNNEngine.FAISS.getName(), SpaceType.DEFAULT.getValue(), false)
             );
             addKNNDocs(testIndex, TEST_FIELD, DIMENSIONS, DOC_ID, NUM_DOCS);
         } else {
@@ -86,7 +84,7 @@ public class PainlessScriptScoringIT extends AbstractRestartUpgradeTestCase {
             createKnnIndex(
                 testIndex,
                 createKNNDefaultScriptScoreSettings(),
-                createKnnIndexMapping(TEST_FIELD, DIMENSIONS, DISK_ANN, KNNEngine.JVECTOR.getName(), SpaceType.DEFAULT.getValue(), false)
+                createKnnIndexMapping(TEST_FIELD, DIMENSIONS, "hnsw", KNNEngine.NMSLIB.getName(), SpaceType.DEFAULT.getValue(), false)
             );
             addKNNDocs(testIndex, TEST_FIELD, DIMENSIONS, DOC_ID, NUM_DOCS);
         } else {

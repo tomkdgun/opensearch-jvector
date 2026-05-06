@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Abstract class for KNN methods. This class provides the common functionality for all KNN methods.
@@ -97,24 +98,10 @@ public abstract class AbstractKNNMethod implements KNNMethod {
         return PerDimensionValidator.DEFAULT_FLOAT_VALIDATOR;
     }
 
-    /**
-     * Return the per-dimension processor appropriate for this method/config.
-     *
-     * @param knnMethodContext current method context
-     * @param knnMethodConfigContext configuration context (dimension, vector type, etc.)
-     * @return per-dimension processor (defaults to NOOP)
-     */
     protected VectorValidator doGetVectorValidator(KNNMethodContext knnMethodContext, KNNMethodConfigContext knnMethodConfigContext) {
         return new SpaceVectorValidator(knnMethodContext.getSpaceType());
     }
 
-    /**
-     * Return the validator used per-dimension for this method.
-     *
-     * @param knnMethodContext current method context
-     * @param knnMethodConfigContext configuration context
-     * @return per-dimension validator instance
-     */
     protected PerDimensionProcessor doGetPerDimensionProcessor(
         KNNMethodContext knnMethodContext,
         KNNMethodConfigContext knnMethodConfigContext
@@ -122,12 +109,13 @@ public abstract class AbstractKNNMethod implements KNNMethod {
         return PerDimensionProcessor.NOOP_PROCESSOR;
     }
 
-    /**
-     * Return a vector transformer for the provided space type.
-     *
-     * @param spaceType the space type for which to obtain a transformer
-     * @return a VectorTransformer; by default a NOOP transformer
-     */
+    protected Function<TrainingConfigValidationInput, TrainingConfigValidationOutput> doGetTrainingConfigValidationSetup() {
+        return (trainingConfigValidationInput) -> {
+            TrainingConfigValidationOutput.TrainingConfigValidationOutputBuilder builder = TrainingConfigValidationOutput.builder();
+            return builder.build();
+        };
+    }
+
     protected VectorTransformer getVectorTransformer(SpaceType spaceType) {
         return VectorTransformerFactory.NOOP_VECTOR_TRANSFORMER;
     }
@@ -151,6 +139,7 @@ public abstract class AbstractKNNMethod implements KNNMethod {
             .perDimensionValidator(doGetPerDimensionValidator(knnMethodContext, knnMethodConfigContext))
             .perDimensionProcessor(doGetPerDimensionProcessor(knnMethodContext, knnMethodConfigContext))
             .vectorTransformer(getVectorTransformer(knnMethodContext.getSpaceType()))
+            .trainingConfigValidationSetup(doGetTrainingConfigValidationSetup())
             .build();
     }
 

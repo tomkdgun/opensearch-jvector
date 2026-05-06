@@ -6,22 +6,29 @@
 package org.opensearch.knn.index.mapper;
 
 import lombok.Getter;
+import lombok.extern.log4j.Log4j2;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.lucene.search.FieldExistsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.util.BytesRef;
+import org.opensearch.Version;
 import org.opensearch.index.fielddata.IndexFieldData;
-import org.opensearch.index.mapper.MappedFieldType;
 import org.opensearch.index.mapper.ArraySourceValueFetcher;
+import org.opensearch.index.mapper.MappedFieldType;
 import org.opensearch.index.mapper.TextSearchInfo;
 import org.opensearch.index.mapper.ValueFetcher;
 import org.opensearch.index.query.QueryShardContext;
 import org.opensearch.index.query.QueryShardException;
 import org.opensearch.knn.index.KNNVectorIndexFieldData;
 import org.opensearch.knn.index.VectorDataType;
+import org.opensearch.knn.index.engine.KNNEngine;
 import org.opensearch.knn.index.engine.KNNMethodContext;
+import org.opensearch.knn.index.engine.faiss.FaissSQEncoder;
+import org.opensearch.knn.index.engine.MemoryOptimizedSearchSupportSpec;
 import org.opensearch.knn.index.query.rescore.RescoreContext;
+import org.opensearch.knn.indices.ModelDao;
+import org.opensearch.knn.indices.ModelMetadata;
 import org.opensearch.search.aggregations.support.CoreValuesSourceType;
 import org.opensearch.search.lookup.SearchLookup;
 
@@ -32,16 +39,65 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
+import static org.opensearch.knn.common.KNNConstants.METHOD_FLAT;
 import static org.opensearch.knn.index.mapper.KNNVectorFieldMapperUtil.deserializeStoredVector;
 
 /**
  * A KNNVector field type to represent the vector field in Opensearch
  */
 @Getter
+@Log4j2
 public class KNNVectorFieldType extends MappedFieldType {
     private static final Logger logger = LogManager.getLogger(KNNVectorFieldType.class);
     KNNMappingConfig knnMappingConfig;
     VectorDataType vectorDataType;
+    /**
+     * When {@code true}, memory-optimized search is always applied for this field regardless of the
+     * cluster-level setting. This is determined at mapping time based on the encoder type
+     * (e.g., FAISS SQ encoder always requires memory-optimized search).
+     *
+     * @see MemoryOptimizedSearchSupportSpec#isAlwaysUseMemoryOptimizedSearch(java.util.Optional)
+     */
+    boolean alwaysUseMemoryOptimizedSearch;
+    /**
+     * Whether this field type can benefit from memory-optimized search. This is determined at mapping time
+     * based on the engine, method, encoder, and quantization configuration. A field may be eligible for
+     * memory-optimized search but still require the cluster-level setting to be enabled, unless
+     * {@link #alwaysUseMemoryOptimizedSearch} is {@code true}.
+     *
+     * @see MemoryOptimizedSearchSupportSpec#isSupportedFieldType(java.util.Optional,
+     *      org.opensearch.knn.index.engine.qframe.QuantizationConfig, java.util.Optional)
+     */
+    boolean memoryOptimizedSearchAvailable;
+    Version indexCreatedVersion;
+
+    /**
+     * Constructor for KNNVectorFieldType with index created version.
+     *
+     * @param name name of the field
+     * @param metadata metadata of the field
+     * @param vectorDataType data type of the vector
+     * @param annConfig configuration context for the ANN index
+     * @param indexCreatedVersion Index created version.
+     */
+    public KNNVectorFieldType(
+        String name,
+        Map<String, String> metadata,
+        VectorDataType vectorDataType,
+        KNNMappingConfig annConfig,
+        Version indexCreatedVersion
+    ) {
+        this(name, metadata, vectorDataType, annConfig);
+        this.alwaysUseMemoryOptimizedSearch = MemoryOptimizedSearchSupportSpec.isAlwaysUseMemoryOptimizedSearch(
+            knnMappingConfig.getKnnMethodContext()
+        );
+        this.memoryOptimizedSearchAvailable = MemoryOptimizedSearchSupportSpec.isSupportedFieldType(
+            knnMappingConfig.getKnnMethodContext(),
+            annConfig.getQuantizationConfig(),
+            annConfig.getModelId()
+        );
+        this.indexCreatedVersion = indexCreatedVersion;
+    }
 
     /**
      * Constructor for KNNVectorFieldType.
@@ -111,11 +167,27 @@ public class KNNVectorFieldType extends MappedFieldType {
         if (userProvidedContext != null) {
             return userProvidedContext;
         }
-        KNNMappingConfig knnMappingConfig = getKnnMappingConfig();
-        int dimension = knnMappingConfig.getDimension();
-        CompressionLevel compressionLevel = knnMappingConfig.getCompressionLevel();
-        Mode mode = knnMappingConfig.getMode();
-        return compressionLevel.getDefaultRescoreContext(mode, dimension);
+        final KNNMappingConfig knnMappingConfig = getKnnMappingConfig();
+        final Optional<KNNMethodContext> methodContext = knnMappingConfig.getKnnMethodContext();
+        final boolean isFlatMethod = methodContext.isPresent()
+            && METHOD_FLAT.equals(methodContext.get().getMethodComponentContext().getName());
+        final boolean isSQOneBit = methodContext.map(mc -> FaissSQEncoder.isSQOneBit(mc.getMethodComponentContext().getParameters()))
+            .orElse(false);
+        final int dimension = knnMappingConfig.getDimension();
+        final CompressionLevel compressionLevel = knnMappingConfig.getCompressionLevel();
+        final Mode mode = knnMappingConfig.getMode();
+        KNNEngine engine = null;
+        if (methodContext.isPresent()) {
+            engine = methodContext.get().getKnnEngine();
+        }
+        return compressionLevel.getDefaultRescoreContext(
+            mode,
+            dimension,
+            knnMappingConfig.getIndexCreatedVersion(),
+            isFlatMethod,
+            isSQOneBit,
+            engine
+        );
     }
 
     /**
@@ -131,17 +203,26 @@ public class KNNVectorFieldType extends MappedFieldType {
      * 3. Falls back to model ID if KNN method context is not available
      * 4. Throws exception if neither configuration is present
      */
-    public void transformQueryVector(float[] vector) {
+    public float[] transformQueryVector(float[] vector) {
         if (VectorDataType.FLOAT != vectorDataType) {
-            return;
+            return vector;
         }
         final Optional<KNNMethodContext> knnMethodContext = knnMappingConfig.getKnnMethodContext();
         if (knnMethodContext.isPresent()) {
             KNNMethodContext context = knnMethodContext.get();
-            VectorTransformerFactory.getVectorTransformer(context.getKnnEngine(), context.getSpaceType()).transform(vector);
-            return;
+            return VectorTransformerFactory.getVectorTransformer(
+                context.getKnnEngine(),
+                context.getSpaceType(),
+                context.getMethodComponentContext()
+            ).transform(vector, false);
+        }
+        final Optional<String> modelId = knnMappingConfig.getModelId();
+        if (modelId.isPresent()) {
+            ModelDao modelDao = ModelDao.OpenSearchKNNModelDao.getInstance();
+            final ModelMetadata metadata = modelDao.getMetadata(modelId.get());
+            return VectorTransformerFactory.getVectorTransformer(metadata.getKnnEngine(), metadata.getSpaceType(), null)
+                .transform(vector, false);
         }
         throw new IllegalStateException("Either KNN method context or Model Id should be configured");
-
     }
 }

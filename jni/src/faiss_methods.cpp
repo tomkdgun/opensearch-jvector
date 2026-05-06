@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// The OpenSearch Contributors require contributions made to
+// this file be licensed under the Apache-2.0 license or a
+// compatible open source license.
+//
+// Modifications Copyright OpenSearch Contributors. See
+// GitHub history for details.
+
+#include "faiss_methods.h"
+#include "faiss/index_factory.h"
+#include "faiss/index_io.h"
+
+namespace knn_jni {
+namespace faiss_wrapper {
+
+faiss::Index* FaissMethods::indexFactory(int d, const char* description, faiss::MetricType metric) {
+    return faiss::index_factory(d, description, metric);
+}
+
+faiss::IndexBinary* FaissMethods::indexBinaryFactory(int d, const char* description) {
+    return faiss::index_binary_factory(d, description);
+}
+
+faiss::IndexIDMapTemplate<faiss::Index>* FaissMethods::indexIdMap(faiss::Index* index) {
+    return new faiss::IndexIDMap(index);
+}
+
+faiss::IndexIDMapTemplate<faiss::IndexBinary>* FaissMethods::indexBinaryIdMap(faiss::IndexBinary* index) {
+    return new faiss::IndexBinaryIDMap(index);
+}
+
+void FaissMethods::writeIndex(const faiss::Index* idx, faiss::IOWriter* writer) {
+    faiss::write_index(idx, writer);
+}
+
+void FaissMethods::writeIndexBinary(const faiss::IndexBinary* idx, faiss::IOWriter* writer, bool skipFlat) {
+    faiss::write_index_binary(idx, writer, skipFlat ? faiss::IO_FLAG_SKIP_STORAGE : 0);
+}
+
+} // namespace faiss_wrapper
+} // namesapce knn_jni

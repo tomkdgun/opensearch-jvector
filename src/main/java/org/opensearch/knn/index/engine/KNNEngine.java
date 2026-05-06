@@ -6,34 +6,51 @@
 package org.opensearch.knn.index.engine;
 
 import com.google.common.collect.ImmutableSet;
+import org.opensearch.Version;
 import org.opensearch.common.ValidationException;
 import org.opensearch.knn.index.SpaceType;
+import org.opensearch.knn.memoryoptsearch.VectorSearcherFactory;
+import org.opensearch.knn.index.engine.faiss.Faiss;
 import org.opensearch.knn.index.engine.lucene.Lucene;
-import org.opensearch.knn.index.codec.jvector.JVector;
+import org.opensearch.knn.index.engine.nmslib.Nmslib;
+import org.opensearch.remoteindexbuild.model.RemoteIndexParameters;
 
-import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+import static org.opensearch.knn.common.KNNConstants.FAISS_NAME;
 import static org.opensearch.knn.common.KNNConstants.LUCENE_NAME;
-import static org.opensearch.knn.common.KNNConstants.JVECTOR_NAME;
+import static org.opensearch.knn.common.KNNConstants.NMSLIB_NAME;
 
 /**
  * KNNEngine provides the functionality to validate and transform user defined indices into information that can be
  * passed to the respective k-NN library's JNI layer.
  */
 public enum KNNEngine implements KNNLibrary {
+    @Deprecated(since = "2.19.0", forRemoval = true)
+    NMSLIB(NMSLIB_NAME, Nmslib.INSTANCE, Version.V_3_0_0),
+    FAISS(FAISS_NAME, Faiss.INSTANCE),
     LUCENE(LUCENE_NAME, Lucene.INSTANCE),
-    JVECTOR(JVECTOR_NAME, JVector.INSTANCE);
+    UNDEFINED("undefined");
 
-    public static final KNNEngine DEFAULT = JVECTOR;
+    public static final KNNEngine DEFAULT = FAISS;
+    private final Version restrictedFromVersion; // Nullable field
 
-    private static final Set<KNNEngine> ENGINES_SUPPORTING_FILTERS = ImmutableSet.of(KNNEngine.LUCENE);
-    public static final Set<KNNEngine> ENGINES_SUPPORTING_RADIAL_SEARCH = ImmutableSet.of(KNNEngine.LUCENE);
+    private static final Set<KNNEngine> CUSTOM_SEGMENT_FILE_ENGINES = ImmutableSet.of(KNNEngine.NMSLIB, KNNEngine.FAISS);
+    private static final Set<KNNEngine> ENGINES_SUPPORTING_FILTERS = ImmutableSet.of(KNNEngine.LUCENE, KNNEngine.FAISS);
+    public static final Set<KNNEngine> ENGINES_SUPPORTING_RADIAL_SEARCH = ImmutableSet.of(KNNEngine.LUCENE, KNNEngine.FAISS);
+    public static final Set<KNNEngine> DEPRECATED_ENGINES = ImmutableSet.of(KNNEngine.NMSLIB);
+    public static final Set<KNNEngine> ENGINES_SUPPORTING_NESTED_FIELDS = ImmutableSet.of(KNNEngine.LUCENE, KNNEngine.FAISS);
 
-    private static Map<KNNEngine, Integer> MAX_DIMENSIONS_BY_ENGINE = Map.of(KNNEngine.LUCENE, 16_000, KNNEngine.JVECTOR, 16_000);
+    private static Map<KNNEngine, Integer> MAX_DIMENSIONS_BY_ENGINE = Map.of(
+        KNNEngine.NMSLIB,
+        16_000,
+        KNNEngine.FAISS,
+        16_000,
+        KNNEngine.LUCENE,
+        16_000
+    );
 
     /**
      * Constructor for KNNEngine
@@ -44,6 +61,25 @@ public enum KNNEngine implements KNNLibrary {
     KNNEngine(String name, KNNLibrary knnLibrary) {
         this.name = name;
         this.knnLibrary = knnLibrary;
+        this.restrictedFromVersion = null;
+    }
+
+    /**
+     * Constructor for deprecated engines.
+     */
+    KNNEngine(String name, KNNLibrary knnLibrary, Version restrictedVersion) {
+        this.name = name;
+        this.knnLibrary = knnLibrary;
+        this.restrictedFromVersion = restrictedVersion;
+    }
+
+    /**
+     * Constructor for undefined engines.
+     */
+    KNNEngine(String name) {
+        this.name = name;
+        this.knnLibrary = null;
+        this.restrictedFromVersion = null;
     }
 
     private final String name;
@@ -56,15 +92,34 @@ public enum KNNEngine implements KNNLibrary {
      * @return KNNEngine corresponding to name
      */
     public static KNNEngine getEngine(String name) {
+        if (NMSLIB.getName().equalsIgnoreCase(name)) {
+            return NMSLIB;
+        }
+
+        if (FAISS.getName().equalsIgnoreCase(name)) {
+            return FAISS;
+        }
+
         if (LUCENE.getName().equalsIgnoreCase(name)) {
             return LUCENE;
         }
 
-        if (JVECTOR.getName().equalsIgnoreCase(name)) {
-            return JVECTOR;
+        if (UNDEFINED.getName().equalsIgnoreCase(name)) {
+            return UNDEFINED;
         }
 
-        throw new IllegalArgumentException(String.format(Locale.ROOT, "Invalid engine type: %s", name));
+        throw new IllegalArgumentException(String.format("Invalid engine type: %s", name));
+    }
+
+    /**
+     * Checks if the KNN engine is deprecated for a given OpenSearch version.
+     *
+     * @param indexVersionCreated The OpenSearch version in which the index is being created.
+     * @return {@code true} if the engine is deprecated in the specified version or later, {@code false} otherwise.
+     */
+    @Override
+    public boolean isRestricted(Version indexVersionCreated) {
+        return restrictedFromVersion != null && indexVersionCreated.onOrAfter(restrictedFromVersion);
     }
 
     /**
@@ -74,6 +129,14 @@ public enum KNNEngine implements KNNLibrary {
      * @return KNNEngine corresponding to path
      */
     public static KNNEngine getEngineNameFromPath(String path) {
+        if (path.endsWith(KNNEngine.NMSLIB.getExtension()) || path.endsWith(KNNEngine.NMSLIB.getCompoundExtension())) {
+            return KNNEngine.NMSLIB;
+        }
+
+        if (path.endsWith(KNNEngine.FAISS.getExtension()) || path.endsWith(KNNEngine.FAISS.getCompoundExtension())) {
+            return KNNEngine.FAISS;
+        }
+
         throw new IllegalArgumentException("No engine matches the path's suffix");
     }
 
@@ -83,7 +146,7 @@ public enum KNNEngine implements KNNLibrary {
      * @return Set of all engines that create custom segment files.
      */
     public static Set<KNNEngine> getEnginesThatCreateCustomSegmentFiles() {
-        return Collections.emptySet();
+        return CUSTOM_SEGMENT_FILE_ENGINES;
     }
 
     public static Set<KNNEngine> getEnginesThatSupportsFilters() {
@@ -106,6 +169,15 @@ public enum KNNEngine implements KNNLibrary {
      */
     public String getName() {
         return name;
+    }
+
+    /**
+     * Get the Deprecated Version
+     *
+     * @return Deprecated Version
+     */
+    public Version getRestrictedFromVersion() {
+        return restrictedFromVersion;
     }
 
     @Override
@@ -189,5 +261,20 @@ public enum KNNEngine implements KNNLibrary {
         final SpaceType spaceType
     ) {
         return knnLibrary.resolveMethod(knnMethodContext, knnMethodConfigContext, shouldRequireTraining, spaceType);
+    }
+
+    @Override
+    public boolean supportsRemoteIndexBuild(KNNLibraryIndexingContext knnLibraryIndexingContext) {
+        return knnLibrary.supportsRemoteIndexBuild(knnLibraryIndexingContext);
+    }
+
+    @Override
+    public RemoteIndexParameters createRemoteIndexingParameters(Map<String, Object> parameters) {
+        return knnLibrary.createRemoteIndexingParameters(parameters);
+    }
+
+    @Override
+    public VectorSearcherFactory getVectorSearcherFactory() {
+        return knnLibrary.getVectorSearcherFactory();
     }
 }

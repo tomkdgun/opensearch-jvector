@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import static org.mockito.Mockito.mock;
 import static org.opensearch.core.xcontent.ToXContent.EMPTY_PARAMS;
 import static org.opensearch.index.query.AbstractQueryBuilder.BOOST_FIELD;
 import static org.opensearch.knn.index.KNNClusterTestUtils.mockClusterService;
@@ -35,8 +36,6 @@ import static org.opensearch.knn.index.query.KNNQueryBuilder.NAME;
 import static org.opensearch.knn.index.query.KNNQueryBuilder.EF_SEARCH_FIELD;
 import static org.opensearch.knn.index.query.parser.RescoreParser.RESCORE_OVERSAMPLE_PARAMETER;
 import static org.opensearch.knn.index.query.parser.RescoreParser.RESCORE_PARAMETER;
-
-import static org.mockito.Mockito.mock;
 
 public class KNNQueryBuilderParserTests extends KNNTestCase {
 
@@ -496,7 +495,6 @@ public class KNNQueryBuilderParserTests extends KNNTestCase {
         builder.startObject(NAME);
         builder.startObject(FIELD_NAME);
         builder.field(KNNQueryBuilder.VECTOR_FIELD.getPreferredName(), queryVector);
-        builder.field(KNNQueryBuilder.K_FIELD.getPreferredName(), 0);
         builder.field(KNNQueryBuilder.MAX_DISTANCE_FIELD.getPreferredName(), MAX_DISTANCE);
         builder.field(BOOST_FIELD.getPreferredName(), BOOST);
         builder.endObject();

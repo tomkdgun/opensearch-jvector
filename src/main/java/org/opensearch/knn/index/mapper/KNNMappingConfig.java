@@ -6,6 +6,7 @@
 package org.opensearch.knn.index.mapper;
 
 import org.opensearch.Version;
+import org.opensearch.knn.index.engine.KNNLibraryIndexingContext;
 import org.opensearch.knn.index.engine.KNNMethodContext;
 import org.opensearch.knn.index.engine.qframe.QuantizationConfig;
 
@@ -16,6 +17,13 @@ import java.util.Optional;
  * accidentally configure an index that has multiple ways it can be created. This class is immutable.
  */
 public interface KNNMappingConfig {
+    /**
+     *
+     * @return Optional containing the modelId if created from model, otherwise empty
+     */
+    default Optional<String> getModelId() {
+        return Optional.empty();
+    }
 
     /**
      *
@@ -63,5 +71,9 @@ public interface KNNMappingConfig {
      */
     default Version getIndexCreatedVersion() {
         return Version.CURRENT;
+    }
+
+    default KNNLibraryIndexingContext getKnnLibraryIndexingContext() {
+        return null;
     }
 }

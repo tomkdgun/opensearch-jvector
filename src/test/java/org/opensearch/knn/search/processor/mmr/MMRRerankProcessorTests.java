@@ -25,8 +25,9 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Map;
 
-import static org.mockito.Mockito.mock;
+import static org.opensearch.knn.common.KNNConstants.MMR_EXPLAIN;
 import static org.opensearch.knn.common.KNNConstants.MMR_RERANK_CONTEXT;
+import static org.mockito.Mockito.mock;
 
 public class MMRRerankProcessorTests extends KNNTestCase {
     private MMRRerankProcessor processor;
@@ -39,59 +40,14 @@ public class MMRRerankProcessorTests extends KNNTestCase {
         searchRequest = new SearchRequest();
     }
 
-    // ============================================
-    // Test: Public getter methods
-    // ============================================
-
-    public void testGetType_ReturnsCorrectType() {
-        assertEquals("mmr_rerank", processor.getType());
-        assertEquals(MMRRerankProcessor.TYPE, processor.getType());
-    }
-
-    public void testGetTag_ReturnsConfiguredTag() {
-        assertEquals("test-tag", processor.getTag());
-
-        MMRRerankProcessor customProcessor = new MMRRerankProcessor("custom-tag", false);
-        assertEquals("custom-tag", customProcessor.getTag());
-    }
-
-    public void testGetDescription_ReturnsNonEmptyDescription() {
-        String description = processor.getDescription();
-        assertNotNull(description);
-        assertFalse(description.isEmpty());
-        assertTrue(description.contains("rerank"));
-        assertTrue(description.contains("Maximal Marginal Relevance"));
-        assertEquals(MMRRerankProcessor.DESCRIPTION, description);
-    }
-
-    public void testIsIgnoreFailure_ReturnsConfiguredValue() {
-        assertFalse(processor.isIgnoreFailure());
-
-        MMRRerankProcessor processorWithIgnoreFailure = new MMRRerankProcessor("tag", true);
-        assertTrue(processorWithIgnoreFailure.isIgnoreFailure());
-    }
-
-    public void testGetExecutionStage_ReturnsPreUserDefined() {
-        assertEquals(MMRRerankProcessor.ExecutionStage.PRE_USER_DEFINED, processor.getExecutionStage());
-    }
-
-    // ============================================
-    // Test: processResponse without context
-    // ============================================
-
-    public void testProcessResponse_WithoutContext_ThrowsUnsupportedOperationException() {
+    public void testProcessResponse_withoutContext_thenThrowsUnsupportedOperationException() {
         UnsupportedOperationException ex = assertThrows(
             UnsupportedOperationException.class,
             () -> processor.processResponse(searchRequest, mock(SearchResponse.class))
         );
 
-        assertTrue(ex.getMessage().contains("mmr_rerank"));
-        assertTrue(ex.getMessage().contains("PipelineProcessingContext"));
+        assertEquals("Should not try to use mmr_rerank to process a search response without PipelineProcessingContext.", ex.getMessage());
     }
-
-    // ============================================
-    // Test: Integration tests with actual reranking
-    // ============================================
 
     public void testProcessResponse_whenEmptyHits_thenReturnOriginalResponse() throws IOException {
         SearchResponse emptyResponse = createSearchResponse(new SearchHit[] {});
@@ -188,6 +144,118 @@ public class MMRRerankProcessorTests extends KNNTestCase {
         assertEquals(expectedMessage, exception.getMessage());
     }
 
+    @SuppressWarnings("unchecked")
+    public void testProcessResponse_whenExplainEnabled_thenExplainInfoInSource() throws IOException {
+        SearchResponse searchResponse = createSearchResponse();
+
+        MMRRerankContext mmrRerankContext = new MMRRerankContext();
+        mmrRerankContext.setDiversity(0.5f);
+        mmrRerankContext.setOriginalQuerySize(3);
+        mmrRerankContext.setSpaceType(SpaceType.L2);
+        mmrRerankContext.setVectorDataType(VectorDataType.FLOAT);
+        mmrRerankContext.setVectorFieldPath("knn_vector");
+        mmrRerankContext.setExplain(true);
+        PipelineProcessingContext ctx = new PipelineProcessingContext();
+        ctx.setAttribute(MMR_RERANK_CONTEXT, mmrRerankContext);
+
+        SearchResponse result = processor.processResponse(searchRequest, searchResponse, ctx);
+
+        assertEquals(3, result.getInternalResponse().hits().getHits().length);
+
+        for (SearchHit hit : result.getInternalResponse().hits().getHits()) {
+            Map<String, Object> source = hit.getSourceAsMap();
+            assertNotNull("mmr_explain should be present when explain is enabled", source.get(MMR_EXPLAIN));
+            Map<String, Object> explainInfo = (Map<String, Object>) source.get(MMR_EXPLAIN);
+            assertNotNull("original_score should be present", explainInfo.get(MMRExplainInfo.ORIGINAL_SCORE_FIELD));
+            assertNotNull("max_similarity_to_selected should be present", explainInfo.get(MMRExplainInfo.MAX_SIMILARITY_TO_SELECTED_FIELD));
+            assertNotNull("mmr_score should be present", explainInfo.get(MMRExplainInfo.MMR_SCORE_FIELD));
+            assertNotNull("mmr_formula should be present", explainInfo.get(MMRExplainInfo.MMR_FORMULA_FIELD));
+            // selection_round and selected_so_far are intentionally omitted - they can be inferred from result position
+            assertNull("selection_round should NOT be present (redundant with result position)", explainInfo.get("selection_round"));
+            assertNull("selected_so_far should NOT be present (redundant with preceding hits)", explainInfo.get("selected_so_far"));
+        }
+
+        // Verify first hit has max_similarity_to_selected = 0 (no prior selections)
+        Map<String, Object> firstExplain = (Map<String, Object>) result.getInternalResponse().hits().getHits()[0].getSourceAsMap()
+            .get(MMR_EXPLAIN);
+        assertEquals(0.0f, ((Number) firstExplain.get(MMRExplainInfo.MAX_SIMILARITY_TO_SELECTED_FIELD)).floatValue(), 1e-6);
+    }
+
+    public void testProcessResponse_whenExplainDisabled_thenNoExplainInfoInSource() throws IOException {
+        SearchResponse searchResponse = createSearchResponse();
+
+        MMRRerankContext mmrRerankContext = new MMRRerankContext();
+        mmrRerankContext.setDiversity(0.5f);
+        mmrRerankContext.setOriginalQuerySize(3);
+        mmrRerankContext.setSpaceType(SpaceType.L2);
+        mmrRerankContext.setVectorDataType(VectorDataType.FLOAT);
+        mmrRerankContext.setVectorFieldPath("knn_vector");
+        mmrRerankContext.setExplain(false);
+        PipelineProcessingContext ctx = new PipelineProcessingContext();
+        ctx.setAttribute(MMR_RERANK_CONTEXT, mmrRerankContext);
+
+        SearchResponse result = processor.processResponse(searchRequest, searchResponse, ctx);
+
+        assertEquals(3, result.getInternalResponse().hits().getHits().length);
+
+        for (SearchHit hit : result.getInternalResponse().hits().getHits()) {
+            Map<String, Object> source = hit.getSourceAsMap();
+            assertNull("mmr_explain should NOT be present when explain is disabled", source.get(MMR_EXPLAIN));
+        }
+    }
+
+    public void testProcessResponse_whenExplainNull_thenNoExplainInfoInSource() throws IOException {
+        SearchResponse searchResponse = createSearchResponse();
+
+        MMRRerankContext mmrRerankContext = new MMRRerankContext();
+        mmrRerankContext.setDiversity(0.5f);
+        mmrRerankContext.setOriginalQuerySize(3);
+        mmrRerankContext.setSpaceType(SpaceType.L2);
+        mmrRerankContext.setVectorDataType(VectorDataType.FLOAT);
+        mmrRerankContext.setVectorFieldPath("knn_vector");
+        // explain is not set (null)
+        PipelineProcessingContext ctx = new PipelineProcessingContext();
+        ctx.setAttribute(MMR_RERANK_CONTEXT, mmrRerankContext);
+
+        SearchResponse result = processor.processResponse(searchRequest, searchResponse, ctx);
+
+        assertEquals(3, result.getInternalResponse().hits().getHits().length);
+
+        for (SearchHit hit : result.getInternalResponse().hits().getHits()) {
+            Map<String, Object> source = hit.getSourceAsMap();
+            assertNull("mmr_explain should NOT be present when explain is null", source.get(MMR_EXPLAIN));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public void testProcessResponse_whenExplainEnabledWithFetchSourceFilter_thenExplainInfoFilteredCorrectly() throws IOException {
+        SearchResponse searchResponse = createSearchResponse();
+
+        MMRRerankContext mmrRerankContext = new MMRRerankContext();
+        mmrRerankContext.setDiversity(0.5f);
+        mmrRerankContext.setOriginalQuerySize(3);
+        mmrRerankContext.setSpaceType(SpaceType.L2);
+        mmrRerankContext.setVectorDataType(VectorDataType.FLOAT);
+        mmrRerankContext.setVectorFieldPath("knn_vector");
+        mmrRerankContext.setExplain(true);
+        // Exclude knn_vector but include mmr_explain
+        mmrRerankContext.setOriginalFetchSourceContext(new FetchSourceContext(true, new String[] {}, new String[] { "knn_vector" }));
+        PipelineProcessingContext ctx = new PipelineProcessingContext();
+        ctx.setAttribute(MMR_RERANK_CONTEXT, mmrRerankContext);
+
+        SearchResponse result = processor.processResponse(searchRequest, searchResponse, ctx);
+
+        assertEquals(3, result.getInternalResponse().hits().getHits().length);
+
+        for (SearchHit hit : result.getInternalResponse().hits().getHits()) {
+            Map<String, Object> source = hit.getSourceAsMap();
+            // mmr_explain should still be present since it's not excluded
+            assertNotNull("mmr_explain should be present", source.get(MMR_EXPLAIN));
+            // knn_vector should be excluded
+            assertNull("knn_vector should be excluded", source.get("knn_vector"));
+        }
+    }
+
     public void testProcessResponse_whenMissingDiversity_thenException() throws IOException {
         SearchResponse searchResponse = createSearchResponse();
 
@@ -204,145 +272,6 @@ public class MMRRerankProcessorTests extends KNNTestCase {
         String expectedMessage = "Diversity in MMR rerank context cannot be null";
         assertEquals(expectedMessage, exception.getMessage());
     }
-
-    // ============================================
-    // Test: Constructor variations
-    // ============================================
-
-    public void testConstructor_WithAllParameters() {
-        String tag = "custom-tag";
-        boolean ignoreFailure = true;
-
-        MMRRerankProcessor proc = new MMRRerankProcessor(tag, ignoreFailure);
-
-        assertEquals(tag, proc.getTag());
-        assertEquals(ignoreFailure, proc.isIgnoreFailure());
-        assertEquals("mmr_rerank", proc.getType());
-        assertNotNull(proc.getDescription());
-    }
-
-    public void testConstructor_WithNullTag() {
-        MMRRerankProcessor proc = new MMRRerankProcessor(null, false);
-
-        assertNull(proc.getTag());
-        assertEquals("mmr_rerank", proc.getType());
-    }
-
-    public void testConstructor_WithEmptyTag() {
-        MMRRerankProcessor proc = new MMRRerankProcessor("", false);
-
-        assertEquals("", proc.getTag());
-        assertNotNull(proc.getType());
-    }
-
-    public void testConstructor_WithDifferentIgnoreFailureValues() {
-        MMRRerankProcessor procTrue = new MMRRerankProcessor("tag1", true);
-        MMRRerankProcessor procFalse = new MMRRerankProcessor("tag2", false);
-
-        assertTrue(procTrue.isIgnoreFailure());
-        assertFalse(procFalse.isIgnoreFailure());
-    }
-
-    // ============================================
-    // Test: Multiple processor instances
-    // ============================================
-
-    public void testMultipleInstances_AreIndependent() {
-        MMRRerankProcessor proc1 = new MMRRerankProcessor("tag1", true);
-        MMRRerankProcessor proc2 = new MMRRerankProcessor("tag2", false);
-
-        assertEquals("tag1", proc1.getTag());
-        assertEquals("tag2", proc2.getTag());
-        assertTrue(proc1.isIgnoreFailure());
-        assertFalse(proc2.isIgnoreFailure());
-
-        assertEquals(proc1.getType(), proc2.getType());
-        assertEquals(proc1.getExecutionStage(), proc2.getExecutionStage());
-        assertEquals(proc1.getDescription(), proc2.getDescription());
-    }
-
-    // ============================================
-    // Test: Factory class
-    // ============================================
-
-    public void testFactory_TypeConstant() {
-        assertEquals("mmr_rerank_factory", MMRRerankProcessor.MMRRerankProcessorFactory.TYPE);
-    }
-
-    public void testFactory_Constructor() {
-        MMRRerankProcessor.MMRRerankProcessorFactory factory = new MMRRerankProcessor.MMRRerankProcessorFactory();
-
-        assertNotNull(factory);
-    }
-
-    // ============================================
-    // Test: Constants and default values
-    // ============================================
-
-    public void testConstants_HaveExpectedValues() {
-        assertEquals("mmr_rerank", MMRRerankProcessor.TYPE);
-        assertNotNull(MMRRerankProcessor.DESCRIPTION);
-        assertFalse(MMRRerankProcessor.DESCRIPTION.isEmpty());
-        assertTrue(MMRRerankProcessor.DESCRIPTION.length() > 20);
-    }
-
-    public void testTypeConstant_MatchesGetType() {
-        assertEquals(MMRRerankProcessor.TYPE, processor.getType());
-    }
-
-    public void testDescriptionConstant_MatchesGetDescription() {
-        assertEquals(MMRRerankProcessor.DESCRIPTION, processor.getDescription());
-    }
-
-    // ============================================
-    // Test: Execution stage behavior
-    // ============================================
-
-    public void testExecutionStage_IsConsistentAcrossInstances() {
-        MMRRerankProcessor proc1 = new MMRRerankProcessor("tag1", true);
-        MMRRerankProcessor proc2 = new MMRRerankProcessor("tag2", false);
-
-        assertEquals(proc1.getExecutionStage(), proc2.getExecutionStage());
-        assertEquals(MMRRerankProcessor.ExecutionStage.PRE_USER_DEFINED, proc1.getExecutionStage());
-    }
-
-    public void testExecutionStage_IsPreUserDefined() {
-        assertEquals(MMRRerankProcessor.ExecutionStage.PRE_USER_DEFINED, processor.getExecutionStage());
-    }
-
-    // ============================================
-    // Test: Edge cases
-    // ============================================
-
-    public void testGetters_ReturnNonNullValues() {
-        assertNotNull(processor.getType());
-        assertNotNull(processor.getDescription());
-        assertNotNull(processor.getExecutionStage());
-    }
-
-    public void testProcessorBehavior_WithDifferentTags() {
-        String[] tags = { "tag1", "tag2", "tag3", null, "" };
-
-        for (String tag : tags) {
-            MMRRerankProcessor proc = new MMRRerankProcessor(tag, false);
-            assertEquals(tag, proc.getTag());
-            assertEquals("mmr_rerank", proc.getType());
-        }
-    }
-
-    public void testProcessorBehavior_WithDifferentIgnoreFailureFlags() {
-        boolean[] flags = { true, false };
-
-        for (boolean flag : flags) {
-            MMRRerankProcessor proc = new MMRRerankProcessor("tag", flag);
-            assertEquals(flag, proc.isIgnoreFailure());
-            assertEquals("mmr_rerank", proc.getType());
-        }
-    }
-
-    // ============================================
-    // Test: Helper methods for creating test data
-    // ============================================
 
     private SearchResponse createSearchResponse() throws IOException {
         SearchHit[] hits = new SearchHit[10];

@@ -6,6 +6,8 @@
 package org.opensearch.knn.index.codec;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import lombok.SneakyThrows;
 import org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat;
 import org.apache.lucene.document.KnnFloatVectorField;
 import org.apache.lucene.index.DirectoryReader;
@@ -13,6 +15,10 @@ import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.join.BitSetProducer;
+import org.mockito.MockedStatic;
+import org.opensearch.Version;
 import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.xcontent.XContentFactory;
@@ -26,8 +32,16 @@ import org.opensearch.knn.index.engine.MethodComponentContext;
 import org.opensearch.knn.index.SpaceType;
 import org.opensearch.knn.index.VectorDataType;
 import org.opensearch.knn.index.VectorField;
+import org.opensearch.knn.index.mapper.CompressionLevel;
 import org.opensearch.knn.index.mapper.KNNVectorFieldType;
+import org.opensearch.knn.index.mapper.Mode;
+import org.opensearch.knn.index.query.BaseQueryFactory;
+import org.opensearch.knn.index.query.KNNQueryFactory;
+import org.opensearch.knn.jni.JNICommons;
+import org.opensearch.knn.jni.JNIService;
+import org.opensearch.knn.index.query.KNNQuery;
 import org.opensearch.knn.index.mapper.KNNVectorFieldMapper;
+import org.opensearch.knn.index.query.KNNWeight;
 import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.FieldType;
@@ -36,16 +50,24 @@ import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.tests.index.RandomIndexWriter;
 import org.apache.lucene.index.SerialMergeScheduler;
 import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.search.KnnFloatVectorQuery;
 import org.apache.lucene.store.Directory;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.knn.index.memory.NativeMemoryLoadStrategy;
 import org.opensearch.knn.index.engine.KNNEngine;
+import org.opensearch.knn.indices.Model;
+import org.opensearch.knn.indices.ModelCache;
+import org.opensearch.knn.indices.ModelDao;
+import org.opensearch.knn.indices.ModelMetadata;
+import org.opensearch.knn.indices.ModelState;
 import org.opensearch.watcher.ResourceWatcherService;
 import org.mockito.Mockito;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.nio.file.Path;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
@@ -63,17 +85,19 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.opensearch.Version.CURRENT;
+import static org.opensearch.knn.common.KNNConstants.DEFAULT_VECTOR_DATA_TYPE_FIELD;
 import static org.opensearch.knn.common.KNNConstants.HNSW_ALGO_EF_CONSTRUCTION;
 import static org.opensearch.knn.common.KNNConstants.HNSW_ALGO_M;
+import static org.opensearch.knn.common.KNNConstants.INDEX_DESCRIPTION_PARAMETER;
 import static org.opensearch.knn.common.KNNConstants.METHOD_HNSW;
-import static org.opensearch.knn.common.KNNConstants.DISK_ANN;
 import static org.opensearch.knn.common.KNNConstants.METHOD_PARAMETER_EF_CONSTRUCTION;
 import static org.opensearch.knn.common.KNNConstants.METHOD_PARAMETER_M;
+import static org.opensearch.knn.common.KNNConstants.SPACE_TYPE;
+import static org.opensearch.knn.index.KNNSettings.MODEL_CACHE_SIZE_LIMIT_SETTING;
 
 /**
  * Test used for testing Codecs
  */
-
 public class KNNCodecTestCase extends KNNTestCase {
     private static final FieldType sampleFieldType;
     static {
@@ -82,9 +106,9 @@ public class KNNCodecTestCase extends KNNTestCase {
             .vectorDataType(VectorDataType.DEFAULT)
             .build();
         KNNMethodContext knnMethodContext = new KNNMethodContext(
-            KNNEngine.JVECTOR,
+            KNNEngine.NMSLIB,
             SpaceType.DEFAULT,
-            new MethodComponentContext(DISK_ANN, ImmutableMap.of(METHOD_PARAMETER_M, 16, METHOD_PARAMETER_EF_CONSTRUCTION, 512))
+            new MethodComponentContext(METHOD_HNSW, ImmutableMap.of(METHOD_PARAMETER_M, 16, METHOD_PARAMETER_EF_CONSTRUCTION, 512))
         );
         String parameterString;
         try {
@@ -136,7 +160,6 @@ public class KNNCodecTestCase extends KNNTestCase {
         final Path path = createTempDir();
         try (Directory dir = newFSDirectory(path)) {
             IndexWriterConfig iwc = newIndexWriterConfig();
-            iwc.setUseCompoundFile(false);
             iwc.setMergeScheduler(new SerialMergeScheduler());
             iwc.setCodec(codec);
             // Set merge policy to no merges so that we create a predictable number of segments.
@@ -146,52 +169,176 @@ public class KNNCodecTestCase extends KNNTestCase {
              * Add doc with field "test_vector"
              */
             float[] array = { 1.0f, 3.0f, 4.0f };
-            KnnFloatVectorField vectorField = new KnnFloatVectorField("test_vector", array, VectorSimilarityFunction.EUCLIDEAN);
+            VectorField vectorField = new VectorField("test_vector", array, sampleFieldType);
             RandomIndexWriter writer = new RandomIndexWriter(random(), dir, iwc);
             Document doc = new Document();
             doc.add(vectorField);
             writer.addDocument(doc);
-            // ensuring the refresh happens, to create the segment and vector file
+            // ensuring the refresh happens, to create the segment and hnsw file
             writer.flush();
 
             /**
              * Add doc with field "my_vector"
              */
             float[] array1 = { 6.0f, 14.0f };
-            KnnFloatVectorField vectorField1 = new KnnFloatVectorField("my_vector", array1, VectorSimilarityFunction.EUCLIDEAN);
+            VectorField vectorField1 = new VectorField("my_vector", array1, sampleFieldType);
             Document doc1 = new Document();
             doc1.add(vectorField1);
             writer.addDocument(doc1);
-            // ensuring the refresh happens, to create the segment and vector file
+            // ensuring the refresh happens, to create the segment and hnsw file
             writer.flush();
             writer.close();
-            List<String> jvectorfiles = Arrays.stream(dir.listAll()).filter(x -> x.contains("jvector")).collect(Collectors.toList());
+            List<String> hnswfiles = Arrays.stream(dir.listAll()).filter(x -> x.contains("hnsw")).collect(Collectors.toList());
 
-            // The compound setting could be randomly changed by RandomIndexWriter
-            if (iwc.getUseCompoundFile() == false) {
-                // there should be 8 jvector index files created, with metadata 2 for test_vector and 2 for my_vector
-                assertEquals(8, jvectorfiles.size());
-                assertEquals(jvectorfiles.stream().filter(x -> x.contains("test_vector")).collect(Collectors.toList()).size(), 2);
-                assertEquals(jvectorfiles.stream().filter(x -> x.contains("my_vector")).collect(Collectors.toList()).size(), 2);
-            }
+            // there should be 2 hnsw index files created. one for test_vector and one for my_vector
+            assertEquals(2, hnswfiles.size());
+            assertEquals(hnswfiles.stream().filter(x -> x.contains("test_vector")).collect(Collectors.toList()).size(), 1);
+            assertEquals(hnswfiles.stream().filter(x -> x.contains("my_vector")).collect(Collectors.toList()).size(), 1);
         }
 
         try (Directory dir = newFSDirectory(path); IndexReader reader = DirectoryReader.open(dir)) {
             // query to verify distance for each of the field
             IndexSearcher searcher = new IndexSearcher(reader);
             float score = searcher.search(
-                new KnnFloatVectorQuery("test_vector", new float[] { 1.0f, 0.0f, 0.0f }, 1),
+                new KNNQuery("test_vector", new float[] { 1.0f, 0.0f, 0.0f }, 1, "dummy", (BitSetProducer) null),
                 10
             ).scoreDocs[0].score;
-            float score1 = searcher.search(new KnnFloatVectorQuery("my_vector", new float[] { 1.0f, 2.0f }, 1), 10).scoreDocs[0].score;
+            float score1 = searcher.search(
+                new KNNQuery("my_vector", new float[] { 1.0f, 2.0f }, 1, "dummy", (BitSetProducer) null),
+                10
+            ).scoreDocs[0].score;
             assertEquals(1.0f / (1 + 25), score, 0.01f);
             assertEquals(1.0f / (1 + 169), score1, 0.01f);
 
             // query to determine the hits
-            assertEquals(1, searcher.count(new KnnFloatVectorQuery("test_vector", new float[] { 1.0f, 0.0f, 0.0f }, 1)));
-            assertEquals(1, searcher.count(new KnnFloatVectorQuery("my_vector", new float[] { 1.0f, 1.0f }, 1)));
+            assertEquals(
+                1,
+                searcher.count(new KNNQuery("test_vector", new float[] { 1.0f, 0.0f, 0.0f }, 1, "dummy", (BitSetProducer) null))
+            );
+            assertEquals(1, searcher.count(new KNNQuery("my_vector", new float[] { 1.0f, 1.0f }, 1, "dummy", (BitSetProducer) null)));
 
             reader.close();
+            NativeMemoryLoadStrategy.IndexLoadStrategy.getInstance().close();
+        }
+    }
+
+    @SneakyThrows
+    public void testBuildFromModelTemplate(Codec codec) {
+        // Setup model params
+        String modelId = "test-model";
+        KNNEngine knnEngine = KNNEngine.FAISS;
+        SpaceType spaceType = SpaceType.L2;
+        int dimension = 3;
+
+        // "Train" a faiss flat index - this really just creates an empty index that does brute force k-NN
+        long vectorsPointer = JNICommons.storeVectorData(0, new float[0][0], 0);
+        byte[] modelBlob = JNIService.trainIndex(
+            ImmutableMap.of(INDEX_DESCRIPTION_PARAMETER, "Flat", SPACE_TYPE, spaceType.getValue()),
+            dimension,
+            vectorsPointer,
+            KNNEngine.FAISS
+        );
+
+        // Set the mocked OpenSearchKNNModelDao to INSTANCE.
+        // Mockito’s static mocking is unreliable when multiple threads call the mocked static method concurrently.
+        // Lucene’s test framework uses a random seed to decide whether to create a real FSDirectory instance,
+        // which rarely happens. In most cases, it creates a mocked Directory and never calls the mocked static method.
+        // However, when a real FSDirectory is created, it can spawn multiple threads to perform index checks.
+        // In such cases, a thread may end up calling the actual static method instead of the mocked one.
+        // To prevent this, we explicitly assign the mocked DAO to INSTANCE so that even if the real method is invoked,
+        // the mocked DAO will still be returned.
+        final ModelDao.OpenSearchKNNModelDao modelDao = mock(ModelDao.OpenSearchKNNModelDao.class);
+
+        // Access private static field
+        final Field instanceField = ModelDao.OpenSearchKNNModelDao.class.getDeclaredField("INSTANCE");
+        instanceField.setAccessible(true);
+
+        // Set mock instance
+        instanceField.set(null, modelDao);
+
+        // Setup model cache
+        try (
+            MockedStatic<ModelDao.OpenSearchKNNModelDao> modelDaoMockedStatic = Mockito.mockStatic(ModelDao.OpenSearchKNNModelDao.class);
+            AutoCloseable resetModelDao = () -> {
+                instanceField.set(null, null);
+            }
+        ) {
+            modelDaoMockedStatic.when(ModelDao.OpenSearchKNNModelDao::getInstance).thenReturn(modelDao);
+
+            // Set model state to created
+            ModelMetadata modelMetadata1 = new ModelMetadata(
+                knnEngine,
+                spaceType,
+                dimension,
+                ModelState.CREATED,
+                ZonedDateTime.now(ZoneOffset.UTC).toString(),
+                "",
+                "",
+                "",
+                MethodComponentContext.EMPTY,
+                VectorDataType.FLOAT,
+                Mode.NOT_CONFIGURED,
+                CompressionLevel.NOT_CONFIGURED,
+                Version.V_EMPTY
+            );
+
+            Model mockModel = new Model(modelMetadata1, modelBlob, modelId);
+            when(modelDao.get(modelId)).thenReturn(mockModel);
+            when(modelDao.getMetadata(modelId)).thenReturn(modelMetadata1);
+
+            Settings settings = settings(CURRENT).put(MODEL_CACHE_SIZE_LIMIT_SETTING.getKey(), "10%").build();
+            ClusterSettings clusterSettings = new ClusterSettings(settings, ImmutableSet.of(MODEL_CACHE_SIZE_LIMIT_SETTING));
+
+            ClusterService clusterService = mock(ClusterService.class);
+            when(clusterService.getSettings()).thenReturn(settings);
+            when(clusterService.getClusterSettings()).thenReturn(clusterSettings);
+
+            ModelCache.initialize(modelDao, clusterService);
+            ModelCache.getInstance().removeAll();
+
+            // Setup Lucene
+            setUpMockClusterService();
+            Directory dir = newFSDirectory(createTempDir());
+            IndexWriterConfig iwc = newIndexWriterConfig();
+            iwc.setMergeScheduler(new SerialMergeScheduler());
+            iwc.setCodec(codec);
+
+            FieldType fieldType = new FieldType(KNNVectorFieldMapper.Defaults.FIELD_TYPE);
+            fieldType.setDocValuesType(DocValuesType.BINARY);
+            fieldType.putAttribute(KNNConstants.MODEL_ID, modelId);
+            fieldType.freeze();
+
+            // Add the documents to the index
+            float[][] arrays = { { 1.0f, 3.0f, 4.0f }, { 2.0f, 5.0f, 8.0f }, { 3.0f, 6.0f, 9.0f }, { 4.0f, 7.0f, 10.0f } };
+
+            RandomIndexWriter writer = new RandomIndexWriter(random(), dir, iwc);
+            String fieldName = "test_vector";
+            for (float[] array : arrays) {
+                VectorField vectorField = new VectorField(fieldName, array, fieldType);
+                Document doc = new Document();
+                doc.add(vectorField);
+                writer.addDocument(doc);
+            }
+
+            IndexReader reader = writer.getReader();
+            writer.close();
+
+            // Make sure that search returns the correct results
+            KNNWeight.initialize(modelDao);
+            float[] query = { 10.0f, 10.0f, 10.0f };
+            IndexSearcher searcher = new IndexSearcher(reader);
+            TopDocs topDocs = searcher.search(new KNNQuery(fieldName, query, 4, "dummy", (BitSetProducer) null), 10);
+
+            assertEquals(3, topDocs.scoreDocs[0].doc);
+            assertEquals(2, topDocs.scoreDocs[1].doc);
+            assertEquals(1, topDocs.scoreDocs[2].doc);
+            assertEquals(0, topDocs.scoreDocs[3].doc);
+
+            reader.close();
+            dir.close();
+            NativeMemoryLoadStrategy.IndexLoadStrategy.getInstance().close();
+
+            Thread.sleep(10000);
         }
     }
 
@@ -214,6 +361,7 @@ public class KNNCodecTestCase extends KNNTestCase {
         }
 
         dir.close();
+        NativeMemoryLoadStrategy.IndexLoadStrategy.getInstance().close();
     }
 
     public void testKnnVectorIndex(
@@ -269,7 +417,18 @@ public class KNNCodecTestCase extends KNNTestCase {
         verify(perFieldKnnVectorsFormatSpy, atLeastOnce()).getMaxDimensions(eq(FIELD_NAME_ONE));
 
         IndexSearcher searcher = new IndexSearcher(reader);
-        Query query = new KnnFloatVectorQuery(FIELD_NAME_ONE, new float[] { 1.0f, 0.0f, 0.0f }, 1);
+
+        Query query = KNNQueryFactory.create(
+            BaseQueryFactory.CreateQueryRequest.builder()
+                .knnEngine(KNNEngine.LUCENE)
+                .indexName("dummy")
+                .fieldName(FIELD_NAME_ONE)
+                .vector(new float[] { 1.0f, 0.0f, 0.0f })
+                .k(1)
+                .vectorDataType(DEFAULT_VECTOR_DATA_TYPE_FIELD)
+                .build()
+        );
+
         assertEquals(1, searcher.count(query));
 
         reader.close();
@@ -294,10 +453,21 @@ public class KNNCodecTestCase extends KNNTestCase {
         verify(perFieldKnnVectorsFormatSpy, atLeastOnce()).getMaxDimensions(eq(FIELD_NAME_TWO));
 
         IndexSearcher searcher1 = new IndexSearcher(reader1);
-        Query query1 = new KnnFloatVectorQuery(FIELD_NAME_TWO, new float[] { 1.0f, 0.0f }, 1);
+        Query query1 = KNNQueryFactory.create(
+            BaseQueryFactory.CreateQueryRequest.builder()
+                .knnEngine(KNNEngine.LUCENE)
+                .indexName("dummy")
+                .fieldName(FIELD_NAME_TWO)
+                .vector(new float[] { 1.0f, 0.0f })
+                .k(1)
+                .vectorDataType(DEFAULT_VECTOR_DATA_TYPE_FIELD)
+                .build()
+        );
+
         assertEquals(1, searcher1.count(query1));
 
         reader1.close();
         dir.close();
+        NativeMemoryLoadStrategy.IndexLoadStrategy.getInstance().close();
     }
 }

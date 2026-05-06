@@ -20,6 +20,7 @@ import org.apache.lucene.search.ByteVectorSimilarityQuery;
 import org.apache.lucene.search.FloatVectorSimilarityQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.join.BitSetProducer;
+import org.opensearch.index.IndexSettings;
 import org.opensearch.index.mapper.MappedFieldType;
 import org.opensearch.index.query.QueryBuilder;
 import org.opensearch.index.query.QueryShardContext;
@@ -28,12 +29,6 @@ import org.opensearch.knn.KNNTestCase;
 import org.opensearch.knn.index.VectorDataType;
 import org.opensearch.knn.index.engine.KNNEngine;
 
-/**
- * Tests for RNNQueryFactory - Radial Nearest Neighbor query factory.
- *
- * Note: opensearch-jvector only supports LUCENE engine for radial search.
- * FAISS and other engines that create custom segment files are not supported.
- */
 public class RNNQueryFactoryTests extends KNNTestCase {
     private static final String FILTER_FILED_NAME = "foo";
     private static final String FILTER_FILED_VALUE = "fooval";
@@ -44,6 +39,7 @@ public class RNNQueryFactoryTests extends KNNTestCase {
     private final String testIndexName = "test-index";
     private final String testFieldName = "test-field";
     private final Float testRadius = 0.5f;
+    private final int maxResultWindow = 20000;
     private final Map<String, ?> methodParameters = Map.of(METHOD_PARAMETER_EF_SEARCH, 100);
 
     public void testCreate_whenLucene_withRadiusQuery_withFloatVector() {
@@ -110,5 +106,41 @@ public class RNNQueryFactoryTests extends KNNTestCase {
             Query query = RNNQueryFactory.create(createQueryRequest);
             assertEquals(FloatVectorSimilarityQuery.class, query.getClass());
         }
+    }
+
+    public void testCreate_whenFaiss_thenSucceed() {
+        // Given
+        QueryShardContext mockQueryShardContext = mock(QueryShardContext.class);
+        MappedFieldType testMapper = mock(MappedFieldType.class);
+        IndexSettings indexSettings = mock(IndexSettings.class);
+        when(mockQueryShardContext.getIndexSettings()).thenReturn(indexSettings);
+        when(mockQueryShardContext.fieldMapper(any())).thenReturn(testMapper);
+        when(mockQueryShardContext.getIndexSettings().getMaxResultWindow()).thenReturn(maxResultWindow);
+
+        final KNNQuery expectedQuery = KNNQuery.builder()
+            .field(testFieldName)
+            .queryVector(testQueryVector)
+            .indexName(testIndexName)
+            .radius(testRadius)
+            .methodParameters(methodParameters)
+            .context(new KNNQuery.Context(maxResultWindow))
+            .build();
+
+        // When
+        final RNNQueryFactory.CreateQueryRequest createQueryRequest = RNNQueryFactory.CreateQueryRequest.builder()
+            .knnEngine(KNNEngine.FAISS)
+            .indexName(testIndexName)
+            .fieldName(testFieldName)
+            .vector(testQueryVector)
+            .radius(testRadius)
+            .vectorDataType(DEFAULT_VECTOR_DATA_TYPE_FIELD)
+            .context(mockQueryShardContext)
+            .methodParameters(methodParameters)
+            .build();
+
+        Query query = RNNQueryFactory.create(createQueryRequest);
+
+        // Then
+        assertEquals(expectedQuery, query);
     }
 }

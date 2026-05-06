@@ -7,15 +7,9 @@ package org.opensearch.knn.index.codec.backward_codecs.KNN1030Codec;
 
 import lombok.SneakyThrows;
 import org.apache.lucene.codecs.Codec;
-import org.apache.lucene.codecs.KnnVectorsFormat;
 import org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat;
 import org.opensearch.index.mapper.MapperService;
-import org.opensearch.knn.index.codec.KNN9120Codec.KNN9120PerFieldKnnVectorsFormat;
-import org.opensearch.knn.index.codec.jvector.JVectorFormat;
-
-import com.carrotsearch.randomizedtesting.annotations.ThreadLeakFilters;
-
-import org.opensearch.knn.index.ThreadLeakFiltersForTests;
+import org.opensearch.knn.index.codec.backward_codecs.KNN9120Codec.KNN9120PerFieldKnnVectorsFormat;
 import org.opensearch.knn.index.codec.CustomCodec;
 import org.opensearch.knn.index.codec.CustomCodecNoStoredFields;
 import org.opensearch.knn.index.codec.KNNCodecTestCase;
@@ -24,37 +18,26 @@ import org.opensearch.knn.index.codec.KNNCodecVersion;
 import java.util.Optional;
 import java.util.function.Function;
 
-@ThreadLeakFilters(defaultFilters = true, filters = { ThreadLeakFiltersForTests.class })
 public class KNN1030CodecTests extends KNNCodecTestCase {
 
     @SneakyThrows
     public void testMultiFieldsKnnIndex() {
-        testMultiFieldsKnnIndex(KNN1030Codec.builder().knnVectorsFormat(new PerFieldKnnVectorsFormat() {
-            @Override
-            public KnnVectorsFormat getKnnVectorsFormatForField(String field) {
-                return new JVectorFormat();
-            }
-        }).delegate(KNNCodecVersion.CURRENT_DEFAULT_DELEGATE).build());
+        testMultiFieldsKnnIndex(KNN1030Codec.builder().delegate(KNNCodecVersion.CURRENT_DEFAULT_DELEGATE).build());
     }
 
     @SneakyThrows
     public void testMultiFieldsKnnIndexCustomCodecWithStoredFields() {
-        testMultiFieldsKnnIndex(KNN1030Codec.builder().knnVectorsFormat(new PerFieldKnnVectorsFormat() {
-            @Override
-            public KnnVectorsFormat getKnnVectorsFormatForField(String field) {
-                return new JVectorFormat();
-            }
-        }).delegate(new CustomCodec()).build());
+        testMultiFieldsKnnIndex(KNN1030Codec.builder().delegate(new CustomCodec()).build());
     }
 
     @SneakyThrows
     public void testMultiFieldsKnnIndexCustomCodecWithoutStoredFields() {
-        testMultiFieldsKnnIndex(KNN1030Codec.builder().knnVectorsFormat(new PerFieldKnnVectorsFormat() {
-            @Override
-            public KnnVectorsFormat getKnnVectorsFormatForField(String field) {
-                return new JVectorFormat();
-            }
-        }).delegate(new CustomCodecNoStoredFields()).build());
+        testMultiFieldsKnnIndex(KNN1030Codec.builder().delegate(new CustomCodecNoStoredFields()).build());
+    }
+
+    @SneakyThrows
+    public void testBuildFromModelTemplate() {
+        testBuildFromModelTemplate(KNN1030Codec.builder().delegate(KNNCodecVersion.CURRENT_DEFAULT_DELEGATE).build());
     }
 
     // Ensure that the codec is able to return the correct per field knn vectors format for codec

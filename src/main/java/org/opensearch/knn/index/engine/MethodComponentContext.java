@@ -9,6 +9,7 @@ import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import org.apache.commons.lang3.math.NumberUtils;
+import org.opensearch.Version;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
 import org.opensearch.core.common.io.stream.Writeable;
@@ -25,6 +26,7 @@ import java.util.Objects;
 import java.util.stream.Collectors;
 import org.apache.commons.lang3.builder.EqualsBuilder;
 import org.apache.commons.lang3.builder.HashCodeBuilder;
+import org.opensearch.knn.indices.ModelMetadata;
 
 import static org.opensearch.knn.common.KNNConstants.NAME;
 import static org.opensearch.knn.common.KNNConstants.PARAMETERS;
@@ -79,14 +81,22 @@ public class MethodComponentContext implements ToXContentFragment, Writeable {
      */
     public MethodComponentContext(StreamInput in) throws IOException {
         this.name = in.readString();
-
-        // Due to backwards compatibility issue, parameters could be null. To prevent any null pointer exceptions,
-        // do not read if their are no bytes left is null. Make sure this is in sync with the fellow read method. For
-        // more information, refer to https://github.com/opensearch-project/k-NN/issues/353.
-        if (in.available() > 0) {
-            this.parameters = in.readMap(StreamInput::readString, new ParameterMapValueReader());
+        // Check OpenSearch version to ensure backward compatibility
+        if (in.getVersion().onOrAfter(Version.V_3_0_0)) {
+            // In newer versions, explicitly read the boolean flag before reading parameters
+            boolean hasParameters = in.readBoolean();
+            if (hasParameters) {
+                this.parameters = in.readMap(StreamInput::readString, new ParameterMapValueReader());
+            } else {
+                this.parameters = null;
+            }
         } else {
-            this.parameters = null;
+            // In older versions, read parameters directly (without boolean flag)
+            if (in.available() > 0) {
+                this.parameters = in.readMap(StreamInput::readString, new ParameterMapValueReader());
+            } else {
+                this.parameters = null;
+            }
         }
     }
 
@@ -225,6 +235,42 @@ public class MethodComponentContext implements ToXContentFragment, Writeable {
     }
 
     /**
+     *
+     * Provides a String representation of MethodComponentContext
+     * Sample return:
+     * {name=ivf;parameters=[nlist=4;type=fp16;encoder={name=sq;parameters=[nprobes=2;clip=false;]};]}
+     *
+     * @return string representation
+     */
+    public String toClusterStateString() {
+        StringBuilder stringBuilder = new StringBuilder();
+        stringBuilder.append("{name=").append(name).append(DELIMITER);
+        stringBuilder.append("parameters=[");
+        if (Objects.nonNull(parameters)) {
+            for (Map.Entry<String, Object> entry : parameters.entrySet()) {
+                stringBuilder.append(entry.getKey()).append("=");
+                Object objectValue = entry.getValue();
+                String value;
+                if (objectValue instanceof MethodComponentContext) {
+                    value = ((MethodComponentContext) objectValue).toClusterStateString();
+                } else {
+                    value = entry.getValue().toString();
+                }
+                // Model Metadata uses a delimiter to split the input string in its fromString method
+                // https://github.com/opensearch-project/k-NN/blob/2.12/src/main/java/org/opensearch/knn/indices/ModelMetadata.java#L265
+                // If any of the values in the method component context contain this delimiter,
+                // then the method will not work correctly. Therefore, we replace the delimiter with an uncommon
+                // sequence that is very unlikely to appear in the value itself.
+                // https://github.com/opensearch-project/k-NN/issues/1337
+                value = value.replace(ModelMetadata.DELIMITER, DELIMITER_PLACEHOLDER);
+                stringBuilder.append(value).append(DELIMITER);
+            }
+        }
+        stringBuilder.append("]}");
+        return stringBuilder.toString();
+    }
+
+    /**
      * This method converts a string created by the toClusterStateString() method of MethodComponentContext
      * to a MethodComponentContext object.
      *
@@ -302,7 +348,8 @@ public class MethodComponentContext implements ToXContentFragment, Writeable {
         } else if (stringValue.equals("true") || stringValue.equals("false")) {
             value = Boolean.parseBoolean(stringValue);
         } else {
-            throw new IllegalArgumentException("Invalid value in MethodComponentContext");
+            stringValue = stringValue.replace(DELIMITER_PLACEHOLDER, ModelMetadata.DELIMITER);
+            value = stringValue;
         }
 
         return new ValueAndRestToParse(value, stringValueAndRestToParse[1]);
@@ -375,8 +422,17 @@ public class MethodComponentContext implements ToXContentFragment, Writeable {
         // Due to backwards compatibility issue, parameters could be null. To prevent any null pointer exceptions,
         // do not write if parameters is null. Make sure this is in sync with the fellow read method. For more
         // information, refer to https://github.com/opensearch-project/k-NN/issues/353.
-        if (this.parameters != null) {
-            out.writeMap(this.parameters, StreamOutput::writeString, new ParameterMapValueWriter());
+        if (out.getVersion().onOrAfter(Version.V_3_0_0)) {
+            if (this.parameters != null) {
+                out.writeBoolean(true);
+                out.writeMap(this.parameters, StreamOutput::writeString, new ParameterMapValueWriter());
+            } else {
+                out.writeBoolean(false);
+            }
+        } else {
+            if (this.parameters != null) {
+                out.writeMap(this.parameters, StreamOutput::writeString, new ParameterMapValueWriter());
+            }
         }
     }
 

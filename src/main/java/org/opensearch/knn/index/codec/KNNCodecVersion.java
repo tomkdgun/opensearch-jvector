@@ -5,90 +5,13 @@
 
 package org.opensearch.knn.index.codec;
 
-import lombok.AllArgsConstructor;
-import lombok.Getter;
 import org.apache.lucene.codecs.Codec;
-import org.apache.lucene.codecs.lucene104.Lucene104Codec;
-import org.apache.lucene.backward_codecs.lucene101.Lucene101Codec;
-import org.apache.lucene.backward_codecs.lucene103.Lucene103Codec;
-import org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat;
-import org.opensearch.index.mapper.MapperService;
-import org.opensearch.knn.index.codec.backward_codecs.KNN10010Codec.KNN10010Codec;
-import org.opensearch.knn.index.codec.backward_codecs.KNN1030Codec.KNN1030Codec;
 import org.opensearch.knn.index.codec.KNN1040Codec.KNN1040Codec;
-import org.opensearch.knn.index.codec.KNN80Codec.KNN80CompoundFormat;
-import org.opensearch.knn.index.codec.KNN80Codec.KNN80DocValuesFormat;
-import org.opensearch.knn.index.codec.KNN9120Codec.KNN9120PerFieldKnnVectorsFormat;
-
-import java.util.Optional;
-import java.util.function.BiFunction;
-import java.util.function.Function;
-import java.util.function.Supplier;
 
 /**
- * Abstraction for k-NN codec version, aggregates all details for specific version such as codec name, corresponding
- * Lucene codec, formats including one for k-NN vector etc.
+ * Class contains easy to access information about current default codec.
  */
-@AllArgsConstructor
-@Getter
-public enum KNNCodecVersion {
-
-    V_10_01_0(
-        "KNN10010Codec",
-        new Lucene101Codec(),
-        new KNN9120PerFieldKnnVectorsFormat(Optional.empty()),
-        (delegate) -> new KNNFormatFacade(
-            new KNN80DocValuesFormat(delegate.docValuesFormat()),
-            new KNN80CompoundFormat(delegate.compoundFormat())
-        ),
-        (userCodec, mapperService) -> KNN10010Codec.builder()
-            .delegate(userCodec)
-            .knnVectorsFormat(new KNN9120PerFieldKnnVectorsFormat(Optional.ofNullable(mapperService)))
-            .mapperService(mapperService)
-            .build(),
-        KNN10010Codec::new
-    ),
-    V_10_03_0(
-        "KNN1030Codec",
-        new Lucene103Codec(),
-        new KNN9120PerFieldKnnVectorsFormat(Optional.empty()),
-        (delegate) -> new KNNFormatFacade(
-            new KNN80DocValuesFormat(delegate.docValuesFormat()),
-            new KNN80CompoundFormat(delegate.compoundFormat())
-        ),
-        (userCodec, mapperService) -> KNN10010Codec.builder()
-            .delegate(userCodec)
-            .knnVectorsFormat(new KNN9120PerFieldKnnVectorsFormat(Optional.ofNullable(mapperService)))
-            .mapperService(mapperService)
-            .build(),
-        KNN1030Codec::new
-    ),
-    V_10_04_0(
-        "KNN1040Codec",
-        new Lucene104Codec(),
-        new KNN9120PerFieldKnnVectorsFormat(Optional.empty()),
-        (delegate) -> new KNNFormatFacade(
-            new KNN80DocValuesFormat(delegate.docValuesFormat()),
-            new KNN80CompoundFormat(delegate.compoundFormat())
-        ),
-        (userCodec, mapperService) -> KNN10010Codec.builder()
-            .delegate(userCodec)
-            .knnVectorsFormat(new KNN9120PerFieldKnnVectorsFormat(Optional.ofNullable(mapperService)))
-            .mapperService(mapperService)
-            .build(),
-        KNN1040Codec::new
-    );
-
-    private static final KNNCodecVersion CURRENT = V_10_04_0;
+public class KNNCodecVersion {
+    public static final Codec CURRENT_DEFAULT = new KNN1040Codec();
     public static final Codec CURRENT_DEFAULT_DELEGATE = KNN1040Codec.DEFAULT_DELEGATE;
-    private final String codecName;
-    private final Codec defaultCodecDelegate;
-    private final PerFieldKnnVectorsFormat perFieldKnnVectorsFormat;
-    private final Function<Codec, KNNFormatFacade> knnFormatFacadeSupplier;
-    private final BiFunction<Codec, MapperService, Codec> knnCodecSupplier;
-    private final Supplier<Codec> defaultKnnCodecSupplier;
-
-    public static final KNNCodecVersion current() {
-        return CURRENT;
-    }
 }

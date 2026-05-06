@@ -9,6 +9,9 @@ import com.google.common.collect.ImmutableMap;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.Setter;
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.IOContext;
+import org.apache.lucene.store.IndexOutput;
 import org.opensearch.common.xcontent.XContentHelper;
 import org.opensearch.core.common.bytes.BytesArray;
 import org.opensearch.core.xcontent.DeprecationHandler;
@@ -18,7 +21,10 @@ import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
 import org.opensearch.knn.index.SpaceType;
-import org.opensearch.knn.index.codec.util.SerializationMode;
+import org.opensearch.knn.index.engine.KNNEngine;
+import org.opensearch.knn.index.store.IndexOutputWithBuffer;
+import org.opensearch.knn.jni.JNICommons;
+import org.opensearch.knn.jni.JNIService;
 import org.opensearch.knn.plugin.script.KNNScoringUtil;
 
 import java.util.Base64;
@@ -32,6 +38,8 @@ import java.util.List;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.function.BiFunction;
+
+import static org.apache.lucene.tests.util.LuceneTestCase.random;
 
 class DistVector {
     public float dist;
@@ -119,8 +127,35 @@ public class TestUtils {
         return standardVectors;
     }
 
+    // Generating vectors using random function with a seed which makes these vectors standard and generate same vectors for each run.
+    public static int[][] randomlyGenerateStandardVectors(int numVectors, int dimensions, int dimPerByte, int seed) {
+        int numDims = dimensions / dimPerByte;
+        int[][] standardVectors = new int[numVectors][numDims];
+        Random rand = new Random(seed);
+
+        for (int i = 0; i < numVectors; i++) {
+            byte[] byteVector = new byte[numDims];
+            rand.nextBytes(byteVector);
+            int[] vector = new int[numDims];
+            for (int j = 0; j < numDims; j++) {
+                vector[j] = byteVector[j];
+            }
+            standardVectors[i] = vector;
+        }
+        return standardVectors;
+    }
+
     public static float[][] generateRandomVectors(int numVectors, int dimensions) {
-        return randomlyGenerateStandardVectors(numVectors, dimensions, 1);
+        float[][] randomVectors = new float[numVectors][dimensions];
+
+        for (int i = 0; i < numVectors; i++) {
+            float[] vector = new float[dimensions];
+            for (int j = 0; j < dimensions; j++) {
+                vector[j] = random().nextFloat();
+            }
+            randomVectors[i] = vector;
+        }
+        return randomVectors;
     }
 
     /*
@@ -301,7 +336,7 @@ public class TestUtils {
                     vectorsArray[i][j] = vectorsList.get(i)[j];
                 }
             }
-            return new Pair(idsArray, vectorsArray[0].length, SerializationMode.COLLECTION_OF_FLOATS, vectorsArray);
+            return new Pair(idsArray, vectorsArray[0].length, vectorsArray);
         }
 
         private float[][] readQueries(String path) throws IOException {
@@ -389,15 +424,50 @@ public class TestUtils {
             }
         }
 
+        public long loadDataToMemoryAddress() {
+            return JNICommons.storeVectorData(0, indexData.vectors, (long) indexData.vectors.length * indexData.vectors[0].length, true);
+        }
+
+        public long loadBinaryDataToMemoryAddress() {
+            return JNICommons.storeBinaryVectorData(0, indexBinaryData, (long) indexBinaryData.length * indexBinaryData[0].length, true);
+        }
+
         @AllArgsConstructor
         public static class Pair {
             public int[] docs;
             @Getter
             @Setter
             private int dimension;
-            public SerializationMode serializationMode;
             public float[][] vectors;
         }
     }
 
+    public static void createIndex(
+        int[] ids,
+        long address,
+        int dimension,
+        Directory directory,
+        String fileName,
+        Map<String, Object> parameters,
+        KNNEngine engine
+    ) {
+        if (engine != KNNEngine.FAISS) {
+            try (IndexOutput indexOutput = directory.createOutput(fileName, IOContext.DEFAULT)) {
+                final IndexOutputWithBuffer indexOutputWithBuffer = new IndexOutputWithBuffer(indexOutput);
+                JNIService.createIndex(ids, address, dimension, indexOutputWithBuffer, parameters, engine);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        } else {
+            // We can initialize numDocs as 0, this will just not reserve anything.
+            long indexAddress = JNIService.initIndex(0, dimension, parameters, engine);
+            JNIService.insertToIndex(ids, address, dimension, parameters, indexAddress, engine);
+            try (IndexOutput indexOutput = directory.createOutput(fileName, IOContext.DEFAULT)) {
+                final IndexOutputWithBuffer indexOutputWithBuffer = new IndexOutputWithBuffer(indexOutput);
+                JNIService.writeIndex(indexOutputWithBuffer, indexAddress, engine, parameters, false);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+    }
 }

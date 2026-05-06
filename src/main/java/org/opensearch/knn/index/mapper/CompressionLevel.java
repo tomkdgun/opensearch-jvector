@@ -5,9 +5,12 @@
 
 package org.opensearch.knn.index.mapper;
 
+import com.google.common.annotations.VisibleForTesting;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
+import org.opensearch.Version;
 import org.opensearch.core.common.Strings;
+import org.opensearch.knn.index.engine.KNNEngine;
 import org.opensearch.knn.index.query.rescore.RescoreContext;
 
 import java.util.Collections;
@@ -21,39 +24,22 @@ import java.util.Set;
  */
 @AllArgsConstructor
 public enum CompressionLevel {
+    NOT_CONFIGURED(-1, "", null, Collections.emptySet()),
+    x1(1, "1x", null, Collections.emptySet()),
+    x2(2, "2x", null, Collections.emptySet()),
+    x4(4, "4x", RescoreContext.builder().oversampleFactor(1.0f).userProvided(false).build(), Set.of(Mode.ON_DISK)),
+    x8(8, "8x", RescoreContext.builder().oversampleFactor(2.0f).userProvided(false).build(), Set.of(Mode.ON_DISK)),
+    x16(16, "16x", RescoreContext.builder().oversampleFactor(3.0f).userProvided(false).build(), Set.of(Mode.ON_DISK)),
+    x32(32, "32x", RescoreContext.builder().oversampleFactor(3.0f).userProvided(false).build(), Set.of(Mode.ON_DISK)),
+    x64(64, "64x", RescoreContext.builder().oversampleFactor(5.0f).userProvided(false).build(), Set.of(Mode.ON_DISK));
+
+    public static final CompressionLevel MAX_COMPRESSION_LEVEL = CompressionLevel.x64;
 
     /**
-    Unconfigured option
+     * Default is set to 1x and is a noop
      */
-    NOT_CONFIGURED(-1, "", null, Collections.emptySet()),
-    /**
-     No compression
-     */
-    x1(1, "1x", null, Collections.emptySet()),
-    /**
-     Compress using 16bits for a 32-bit floating point number
-     */
-    x2(2, "2x", null, Collections.emptySet()),
-    /**
-     Compress using 8bits for a 32-bit floating point number
-     */
-    x4(4, "4x", null, Collections.emptySet()),
-    /**
-     Compress using 4bits for a 32-bit floating point number
-     */
-    x8(8, "8x", new RescoreContext(2.0f, false, false), Set.of(Mode.ON_DISK)),
-    /**
-     Compress using 2bits for a 32-bit floating point number
-     */
-    x16(16, "16x", new RescoreContext(3.0f, false, false), Set.of(Mode.ON_DISK)),
-    /**
-     Compress using 1bit for a 32-bit floating point number
-     */
-    x32(32, "32x", new RescoreContext(3.0f, false, false), Set.of(Mode.ON_DISK)),
-    /**
-     Compress using 1bits for a 64-bit floating point number
-     */
-    x64(64, "64x", new RescoreContext(5.0f, false, false), Set.of(Mode.ON_DISK));
+    private static final CompressionLevel DEFAULT = x1;
+    private static final float FLAT_OVERSAMPLE_FACTOR = 2.0f;
 
     /**
      * Get the compression level from a string representation. The format for the string should be "Nx", where N is
@@ -81,6 +67,20 @@ public enum CompressionLevel {
     private final Set<Mode> modesForRescore;
 
     /**
+     * Gets the number of bits used to represent a float in order to achieve this compression. For instance, for
+     * 32x compression, each float would need to be encoded in a single bit.
+     *
+     * @return number of bits to represent a float at this compression level
+     */
+    public int numBitsForFloat32() {
+        if (this == NOT_CONFIGURED) {
+            return DEFAULT.numBitsForFloat32();
+        }
+
+        return (Float.BYTES * Byte.SIZE) / compressionLevel;
+    }
+
+    /**
      * Utility method that checks if compression is configured.
      *
      * @param compressionLevel Compression to check
@@ -105,22 +105,75 @@ public enum CompressionLevel {
      *
      * @param mode      The {@link Mode} for which to retrieve the {@link RescoreContext}.
      * @param dimension The dimensional value that determines the {@link RescoreContext} behavior.
-     * @return          A {@link RescoreContext} with an oversample factor of 5.0f if {@code dimension} is less than
-     *                  or equal to 1000, the default {@link RescoreContext} if greater, or {@code null} if the mode
-     *                  is invalid.
+     * @return A {@link RescoreContext} with an oversample factor of 5.0f if {@code dimension} is less than
+     * or equal to 1000, the default {@link RescoreContext} if greater, or {@code null} if the mode
+     * is invalid.
      */
-    public RescoreContext getDefaultRescoreContext(Mode mode, int dimension) {
+    public RescoreContext getDefaultRescoreContext(Mode mode, int dimension, Version version) {
+        return getDefaultRescoreContext(mode, dimension, version, false, false, null);
+    }
+
+    public RescoreContext getDefaultRescoreContext(Mode mode, int dimension, Version version, boolean isFlatMethod) {
+        return getDefaultRescoreContext(mode, dimension, version, isFlatMethod, false, null);
+    }
+
+    public RescoreContext getDefaultRescoreContext(Mode mode, int dimension, Version version, boolean isFlatMethod, KNNEngine engine) {
+        return getDefaultRescoreContext(mode, dimension, version, isFlatMethod, false, engine);
+    }
+
+    public RescoreContext getDefaultRescoreContext(Mode mode, int dimension, Version version, boolean isFlatMethod, boolean isSQOneBit) {
+        return getDefaultRescoreContext(mode, dimension, version, isFlatMethod, isSQOneBit, null);
+    }
+
+    @VisibleForTesting
+    RescoreContext getDefaultRescoreContext(Mode mode, int dimension) {
+        return getDefaultRescoreContext(mode, dimension, Version.CURRENT, false, false, null);
+    }
+
+    public RescoreContext getDefaultRescoreContext(
+        Mode mode,
+        int dimension,
+        Version version,
+        boolean isFlatMethod,
+        boolean isSQOneBit,
+        KNNEngine engine
+    ) {
+        // For sq(bits=1) encoder, use fixed oversample factor.
+        if (isSQOneBit) {
+            return RescoreContext.builder()
+                .oversampleFactor(RescoreContext.FAISS_SCALAR_QUANTIZED_INDEX_OVERSAMPLE_FACTOR)
+                .allowOverrideOversampleFactor(false)
+                .userProvided(false)
+                .build();
+        }
+        // TODO move this to separate class called resolver to resolve rescore context
+        if (this == x32 && isFlatMethod) {
+            return RescoreContext.builder().oversampleFactor(FLAT_OVERSAMPLE_FACTOR).userProvided(false).build();
+        }
         if (modesForRescore.contains(mode)) {
-            // Adjust RescoreContext based on dimension
-            if (dimension <= RescoreContext.DIMENSION_THRESHOLD) {
+            // Special handling for Lucene Scalar Quantizer (x32 compression)
+            // Engine check is temporary until binary scalar quantizer is finalized for FAISS as well
+            if (this == x32 && engine == KNNEngine.LUCENE && version.onOrAfter(Version.V_3_6_0)) {
+                return RescoreContext.builder()
+                    .oversampleFactor(RescoreContext.OVERSAMPLE_FACTOR_DEFAULT_FOR_LUCENE_SCALAR_QUANTIZER_AFTER_V360)
+                    .userProvided(false)
+                    .build();
+            }
+
+            if (this == x4 && version.before(Version.V_3_1_0)) {
+                // For index created before 3.1, context was always null and mode is empty
+                return null;
+            }
+
+            // Adjust RescoreContext based on dimension except for 4x compression
+            if (this != x4 && dimension <= RescoreContext.DIMENSION_THRESHOLD) {
                 // For dimensions <= 1000, return a RescoreContext with 5.0f oversample factor
                 return RescoreContext.builder()
                     .oversampleFactor(RescoreContext.OVERSAMPLE_FACTOR_BELOW_DIMENSION_THRESHOLD)
                     .userProvided(false)
                     .build();
-            } else {
-                return defaultRescoreContext;
             }
+            return defaultRescoreContext;
         }
         return null;
     }

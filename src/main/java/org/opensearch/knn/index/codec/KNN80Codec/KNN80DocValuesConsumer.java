@@ -6,18 +6,21 @@
 package org.opensearch.knn.index.codec.KNN80Codec;
 
 import lombok.extern.log4j.Log4j2;
-import org.opensearch.common.StopWatch;
-import org.opensearch.knn.index.VectorDataType;
-import org.opensearch.knn.index.engine.KNNEngine;
-import org.opensearch.knn.index.vectorvalues.KNNVectorValues;
-import org.opensearch.knn.index.vectorvalues.KNNVectorValuesFactory;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.MergeState;
 import org.apache.lucene.index.SegmentWriteState;
+import org.opensearch.common.StopWatch;
+import org.opensearch.knn.index.VectorDataType;
+import org.opensearch.knn.index.codec.nativeindex.NativeIndexWriter;
+import org.opensearch.knn.index.engine.KNNEngine;
 import org.opensearch.knn.index.mapper.KNNVectorFieldMapper;
+import org.opensearch.knn.index.vectorvalues.KNNVectorValues;
+import org.opensearch.knn.index.vectorvalues.KNNVectorValuesFactory;
 import org.opensearch.knn.plugin.stats.KNNGraphValue;
 
 import java.io.IOException;
@@ -30,6 +33,8 @@ import static org.opensearch.knn.common.FieldInfoExtractor.extractVectorDataType
  */
 @Log4j2
 class KNN80DocValuesConsumer extends DocValuesConsumer {
+
+    private final Logger logger = LogManager.getLogger(KNN80DocValuesConsumer.class);
 
     private final DocValuesConsumer delegatee;
     private final SegmentWriteState state;
@@ -49,13 +54,13 @@ class KNN80DocValuesConsumer extends DocValuesConsumer {
             stopWatch.stop();
             long time_in_millis = stopWatch.totalTime().millis();
             KNNGraphValue.REFRESH_TOTAL_TIME_IN_MILLIS.set(KNNGraphValue.REFRESH_TOTAL_TIME_IN_MILLIS.getValue() + time_in_millis);
-            log.warn("Refresh operation complete in {} ms", time_in_millis);
+            logger.warn("Refresh operation complete in " + time_in_millis + " ms");
         }
     }
 
     private boolean isKNNBinaryFieldRequired(FieldInfo field) {
         final KNNEngine knnEngine = extractKNNEngine(field);
-        log.debug("Read engine [{}] for field [{}]", knnEngine.getName(), field.getName());
+        log.debug(String.format("Read engine [%s] for field [%s]", knnEngine.getName(), field.getName()));
         return field.attributes().containsKey(KNNVectorFieldMapper.KNN_FIELD)
             && KNNEngine.getEnginesThatCreateCustomSegmentFiles().stream().anyMatch(engine -> engine == knnEngine);
     }
@@ -63,6 +68,14 @@ class KNN80DocValuesConsumer extends DocValuesConsumer {
     public void addKNNBinaryField(FieldInfo field, DocValuesProducer valuesProducer, boolean isMerge) throws IOException {
         final VectorDataType vectorDataType = extractVectorDataType(field);
         final KNNVectorValues<?> knnVectorValues = KNNVectorValuesFactory.getVectorValues(vectorDataType, valuesProducer.getBinary(field));
+
+        // For BDV it is fine to use knnVectorValues.totalLiveDocs() as we already run the full loop to calculate total
+        // live docs
+        if (isMerge) {
+            NativeIndexWriter.getWriter(field, state).mergeIndex(() -> knnVectorValues, (int) knnVectorValues.totalLiveDocs());
+        } else {
+            NativeIndexWriter.getWriter(field, state).flushIndex(() -> knnVectorValues, (int) knnVectorValues.totalLiveDocs());
+        }
     }
 
     /**
@@ -85,7 +98,7 @@ class KNN80DocValuesConsumer extends DocValuesConsumer {
                     stopWatch.stop();
                     long time_in_millis = stopWatch.totalTime().millis();
                     KNNGraphValue.MERGE_TOTAL_TIME_IN_MILLIS.set(KNNGraphValue.MERGE_TOTAL_TIME_IN_MILLIS.getValue() + time_in_millis);
-                    log.warn("Merge operation complete in {} ms", time_in_millis);
+                    logger.warn("Merge operation complete in " + time_in_millis + " ms");
                 }
             }
         } catch (Exception e) {

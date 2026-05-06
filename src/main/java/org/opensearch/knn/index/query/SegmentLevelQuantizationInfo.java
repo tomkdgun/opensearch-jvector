@@ -42,5 +42,4 @@ public class SegmentLevelQuantizationInfo {
         final QuantizationState quantizationState = SegmentLevelQuantizationUtil.getQuantizationState(leafReader, fieldName);
         return new SegmentLevelQuantizationInfo(quantizationParams, quantizationState);
     }
-
 }

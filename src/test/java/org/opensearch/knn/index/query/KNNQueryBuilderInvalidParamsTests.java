@@ -23,9 +23,9 @@ public class KNNQueryBuilderInvalidParamsTests extends KNNTestCase {
     private static final float[] QUERY_VECTOR = new float[] { 1.2f, 2.3f, 4.5f };
     private static final String FIELD_NAME = "test_vector";
 
-    private final String description;
-    private final String expectedMessage;
-    private final KNNQueryBuilder.Builder knnQueryBuilderBuilder;
+    private String description;
+    private String expectedMessage;
+    private KNNQueryBuilder.Builder knnQueryBuilderBuilder;
 
     @ParametersFactory(argumentFormatting = "description:%1$s; expectedMessage:%2$s; querybuilder:%3$s")
     public static Collection<Object[]> invalidParameters() {

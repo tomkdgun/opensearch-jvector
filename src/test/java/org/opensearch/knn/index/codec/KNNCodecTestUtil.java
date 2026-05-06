@@ -6,6 +6,7 @@
 package org.opensearch.knn.index.codec;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Maps;
 import lombok.Builder;
 import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.CodecUtil;
@@ -13,9 +14,18 @@ import org.apache.lucene.index.*;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.store.ChecksumIndexInput;
 import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.IOContext;
+import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.util.StringHelper;
 import org.apache.lucene.util.Version;
 import java.util.Set;
+
+import org.opensearch.knn.index.VectorDataType;
+import org.opensearch.knn.index.query.KNNQueryResult;
+import org.opensearch.knn.index.SpaceType;
+import org.opensearch.knn.index.engine.KNNEngine;
+import org.opensearch.knn.index.store.IndexInputWithBuffer;
+import org.opensearch.knn.jni.JNIService;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -23,6 +33,9 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.junit.Assert.assertTrue;
+import static org.opensearch.knn.common.KNNConstants.INDEX_DESCRIPTION_PARAMETER;
+import static org.opensearch.knn.common.KNNConstants.SPACE_TYPE;
+import static org.opensearch.knn.common.KNNConstants.VECTOR_DATA_TYPE_FIELD;
 import static org.opensearch.test.OpenSearchTestCase.randomByteArrayOfLength;
 
 public class KNNCodecTestUtil {
@@ -185,6 +198,65 @@ public class KNNCodecTestUtil {
         indexInput.seek(indexInput.length() - CodecUtil.footerLength());
         CodecUtil.checkFooter(indexInput);
         indexInput.close();
+    }
+
+    public static void assertLoadableByEngine(
+        Map<String, ?> methodParameters,
+        SegmentWriteState state,
+        String fileName,
+        KNNEngine knnEngine,
+        SpaceType spaceType,
+        int dimension
+    ) {
+        try (final IndexInput indexInput = state.directory.openInput(fileName, IOContext.DEFAULT)) {
+            final IndexInputWithBuffer indexInputWithBuffer = new IndexInputWithBuffer(indexInput);
+            long indexPtr = JNIService.loadIndex(
+                indexInputWithBuffer,
+                Maps.newHashMap(ImmutableMap.of(SPACE_TYPE, spaceType.getValue())),
+                knnEngine
+            );
+            int k = 2;
+            float[] queryVector = new float[dimension];
+            KNNQueryResult[] results = JNIService.queryIndex(indexPtr, queryVector, k, methodParameters, knnEngine, null, 0, null);
+            assertTrue(results.length > 0);
+            JNIService.free(indexPtr, knnEngine);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static void assertBinaryIndexLoadableByEngine(
+        SegmentWriteState state,
+        String fileName,
+        KNNEngine knnEngine,
+        SpaceType spaceType,
+        int dimension,
+        VectorDataType vectorDataType
+    ) {
+        try (final IndexInput indexInput = state.directory.openInput(fileName, IOContext.DEFAULT)) {
+            final IndexInputWithBuffer indexInputWithBuffer = new IndexInputWithBuffer(indexInput);
+            long indexPtr = JNIService.loadIndex(
+                indexInputWithBuffer,
+                Maps.newHashMap(
+                    ImmutableMap.of(
+                        SPACE_TYPE,
+                        spaceType.getValue(),
+                        INDEX_DESCRIPTION_PARAMETER,
+                        "BHNSW32",
+                        VECTOR_DATA_TYPE_FIELD,
+                        vectorDataType.getValue()
+                    )
+                ),
+                knnEngine
+            );
+            int k = 2;
+            byte[] queryVector = new byte[dimension];
+            KNNQueryResult[] results = JNIService.queryBinaryIndex(indexPtr, queryVector, k, null, knnEngine, null, 0, null);
+            assertTrue(results.length > 0);
+            JNIService.free(indexPtr, knnEngine);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     @Builder(builderMethodName = "segmentInfoBuilder")

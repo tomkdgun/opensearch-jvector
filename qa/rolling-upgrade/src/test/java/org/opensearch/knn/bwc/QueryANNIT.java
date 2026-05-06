@@ -14,7 +14,8 @@ package org.opensearch.knn.bwc;
 import java.util.Map;
 
 import static org.opensearch.knn.TestUtils.NODES_BWC_CLUSTER;
-import static org.opensearch.knn.common.KNNConstants.*;
+import static org.opensearch.knn.common.KNNConstants.FAISS_NAME;
+import static org.opensearch.knn.common.KNNConstants.METHOD_PARAMETER_EF_SEARCH;
 
 public class QueryANNIT extends AbstractRollingUpgradeTestCase {
     private static final String TEST_FIELD = "test-field";
@@ -22,7 +23,7 @@ public class QueryANNIT extends AbstractRollingUpgradeTestCase {
     private static final int K = 5;
     private static final Integer EF_SEARCH = 10;
     private static final int NUM_DOCS = 10;
-    private static final String ALGORITHM = DISK_ANN;
+    private static final String ALGORITHM = "hnsw";
 
     public void testQueryANNIT() throws Exception {
         waitForClusterHealthGreen(NODES_BWC_CLUSTER);
@@ -31,7 +32,7 @@ public class QueryANNIT extends AbstractRollingUpgradeTestCase {
                 createKnnIndex(
                     testIndex,
                     getKNNDefaultIndexSettings(),
-                    createKnnIndexMapping(TEST_FIELD, DIMENSIONS, ALGORITHM, JVECTOR_NAME)
+                    createKnnIndexMapping(TEST_FIELD, DIMENSIONS, ALGORITHM, FAISS_NAME)
                 );
                 addKNNDocs(testIndex, TEST_FIELD, DIMENSIONS, 0, NUM_DOCS);
                 validateKNNSearch(testIndex, TEST_FIELD, DIMENSIONS, NUM_DOCS, K);
@@ -42,6 +43,26 @@ public class QueryANNIT extends AbstractRollingUpgradeTestCase {
             case UPGRADED:
                 validateKNNSearch(testIndex, TEST_FIELD, DIMENSIONS, NUM_DOCS, K);
                 validateKNNSearch(testIndex, TEST_FIELD, DIMENSIONS, NUM_DOCS, K, Map.of(METHOD_PARAMETER_EF_SEARCH, EF_SEARCH));
+                deleteKNNIndex(testIndex);
+        }
+    }
+
+    public void testKNNRadialSearchRollingUpgrade() throws Exception {
+        waitForClusterHealthGreen(NODES_BWC_CLUSTER);
+        switch (getClusterType()) {
+            case OLD:
+                createKnnIndex(
+                    testIndex,
+                    getKNNDefaultIndexSettings(),
+                    createKnnIndexMapping(TEST_FIELD, DIMENSIONS, ALGORITHM, FAISS_NAME)
+                );
+                addKNNDocs(testIndex, TEST_FIELD, DIMENSIONS, 0, NUM_DOCS);
+                break;
+            case MIXED:
+                validateKNNSearchDistance(testIndex, TEST_FIELD, DIMENSIONS, NUM_DOCS);
+                break;
+            case UPGRADED:
+                validateKNNSearchDistance(testIndex, TEST_FIELD, DIMENSIONS, NUM_DOCS);
                 deleteKNNIndex(testIndex);
         }
     }

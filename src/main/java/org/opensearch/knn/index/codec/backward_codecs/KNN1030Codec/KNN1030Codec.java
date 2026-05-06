@@ -6,20 +6,19 @@
 package org.opensearch.knn.index.codec.backward_codecs.KNN1030Codec;
 
 import lombok.Builder;
-
-import org.apache.lucene.backward_codecs.lucene103.Lucene103Codec;
 import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.CompoundFormat;
 import org.apache.lucene.codecs.DocValuesFormat;
 import org.apache.lucene.codecs.FilterCodec;
 import org.apache.lucene.codecs.KnnVectorsFormat;
 import org.apache.lucene.codecs.StoredFieldsFormat;
+import org.apache.lucene.backward_codecs.lucene103.Lucene103Codec;
 import org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat;
 import org.opensearch.index.mapper.MapperService;
 import org.opensearch.knn.index.codec.KNN10010Codec.KNN10010DerivedSourceStoredFieldsFormat;
 import org.opensearch.knn.index.codec.KNN80Codec.KNN80CompoundFormat;
 import org.opensearch.knn.index.codec.KNN80Codec.KNN80DocValuesFormat;
-import org.opensearch.knn.index.codec.KNN9120Codec.KNN9120PerFieldKnnVectorsFormat;
+import org.opensearch.knn.index.codec.backward_codecs.KNN9120Codec.KNN9120PerFieldKnnVectorsFormat;
 import org.opensearch.knn.index.codec.derivedsource.DerivedSourceReadersSupplier;
 
 import java.util.Optional;
@@ -27,10 +26,11 @@ import java.util.Optional;
 /**
  * KNN Codec that wraps the Lucene Codec which is part of Lucene 10.3
  */
+
 public class KNN1030Codec extends FilterCodec {
 
     private static final String NAME = "KNN1030Codec";
-    public static final Codec DEFAULT_DELEGATE = new Lucene103Codec();
+    private static final Codec DEFAULT_DELEGATE = new Lucene103Codec();
     private static final PerFieldKnnVectorsFormat DEFAULT_KNN_VECTOR_FORMAT = new KNN9120PerFieldKnnVectorsFormat(Optional.empty());
 
     private final PerFieldKnnVectorsFormat perFieldKnnVectorsFormat;
@@ -39,7 +39,7 @@ public class KNN1030Codec extends FilterCodec {
     private final MapperService mapperService;
 
     /**
-     * No arg constructor that uses Lucene103Codec as the delegate
+     * No arg constructor that uses Lucene101Codec as the delegate
      */
     public KNN1030Codec() {
         this(DEFAULT_DELEGATE, DEFAULT_KNN_VECTOR_FORMAT, null);

@@ -4,16 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). See the [CONTRIBUTING guide](./CONTRIBUTING.md#Changelog) for instructions on how to add changelog entries.
 
-## [Unreleased 3.6](https://github.com/opensearch-project/opensearch-jvector/compare/3.5...HEAD)
+## [Unreleased 3.7](https://github.com/opensearch-project/k-NN/compare/main...HEAD)
 ### Features
-### Enhancements
-### Bug Fixes
-### Infrastructure
-* Upgrade Lucene to 10.4.0 [292] (https://github.com/opensearch-project/opensearch-jvector/pull/292)
-* Upgrade jvector from 4.0.0-rc.6 to 4.0.0-rc.8 [370](https://github.com/opensearch-project/opensearch-jvector/pull/370)
-* Update Gradle to 9.4.1 [381](https://github.com/opensearch-project/opensearch-jvector/pull/381)
-### Documentation
-* Update user guide covering index creation, search tuning, compression levels, and advanced topics; add demo script walking through cluster health check, bulk indexing, filtered/tuned KNN search, force merge, and node stats
+* Add debug mode to MMR rerank that injects per-hit scoring details (original_score, max_similarity_to_selected, mmr_score, mmr_formula) into _source via the `debug` flag in the mmr search extension [#3254](https://github.com/opensearch-project/k-NN/pull/3254)
+* Support derived source for knn with other fields [#3260](https://github.com/opensearch-project/k-NN/pull/3260)
+* Added support for 1 bit SQ with remote build [#3270](https://github.com/opensearch-project/k-NN/pull/3270)
+
 ### Maintenance
-* Fix String.format() uses the default system locale [465](https://github.com/opensearch-project/opensearch-jvector/pull/465)
+
+
+### Bug Fixes
+
 ### Refactoring
+
+
+### Enhancements

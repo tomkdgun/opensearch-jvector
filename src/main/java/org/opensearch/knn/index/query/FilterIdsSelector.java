@@ -77,16 +77,16 @@ public class FilterIdsSelector {
      */
     public static FilterIdsSelector getFilterIdSelector(final BitSet filterIdsBitSet, final int cardinality) throws IOException {
         long[] filterIds;
-        FilterIdsSelectorType filterType;
+        FilterIdsSelector.FilterIdsSelectorType filterType;
         if (filterIdsBitSet == null) {
             filterIds = null;
-            filterType = FilterIdsSelectorType.BITMAP;
+            filterType = FilterIdsSelector.FilterIdsSelectorType.BITMAP;
         } else if (filterIdsBitSet instanceof FixedBitSet) {
             /**
              * When filterIds is dense filter, using fixed bitset
              */
             filterIds = ((FixedBitSet) filterIdsBitSet).getBits();
-            filterType = FilterIdsSelectorType.BITMAP;
+            filterType = FilterIdsSelector.FilterIdsSelectorType.BITMAP;
         } else if ((cardinality * Long.BYTES * Byte.SIZE) <= filterIdsBitSet.length()) {
             /**
              * When filterIds is sparse bitset, using ram usage to decide FilterIdsSelectorType
@@ -103,7 +103,7 @@ public class FilterIdsSelector {
             BitSetIterator sparseBitSetIterator = new BitSetIterator(filterIdsBitSet, cardinality);
             fixedBitSet.or(sparseBitSetIterator);
             filterIds = fixedBitSet.getBits();
-            filterType = FilterIdsSelectorType.BITMAP;
+            filterType = FilterIdsSelector.FilterIdsSelectorType.BITMAP;
         }
         return new FilterIdsSelector(filterIds, filterType);
     }

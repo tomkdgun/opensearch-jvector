@@ -1,6 +1,12 @@
-rootProject.name = 'opensearch-jvector-plugin'
+/*
+ *  Copyright OpenSearch Contributors
+ *  SPDX-License-Identifier: Apache-2.0
+ */
+
+rootProject.name = 'opensearch-knn'
 
 include ":qa"
 include ":qa:rolling-upgrade"
 include ":qa:restart-upgrade"
-include ":benchmark-jmh"
+include ":remote-index-build-client"
+

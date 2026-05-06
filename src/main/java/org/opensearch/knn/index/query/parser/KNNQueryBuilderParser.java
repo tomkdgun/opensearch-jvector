@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.Function;
@@ -126,7 +127,11 @@ public final class KNNQueryBuilderParser {
         KNNQueryBuilder.Builder builder = new KNNQueryBuilder.Builder();
         builder.fieldName(in.readString());
         builder.vector(in.readFloatArray());
-        builder.k(in.readInt());
+        if (minClusterVersionCheck.apply(KNNConstants.NULL_K)) {
+            builder.k(in.readOptionalInt());
+        } else {
+            builder.k(in.readInt());
+        }
         builder.filter(in.readOptionalNamedWriteable(QueryBuilder.class));
 
         if (minClusterVersionCheck.apply("ignore_unmapped")) {
@@ -165,7 +170,11 @@ public final class KNNQueryBuilderParser {
         throws IOException {
         out.writeString(builder.fieldName());
         out.writeFloatArray((float[]) builder.vector());
-        out.writeInt(builder.getK());
+        if (minClusterVersionCheck.apply(KNNConstants.NULL_K)) {
+            out.writeOptionalInt(builder.getK());
+        } else {
+            out.writeInt(Optional.ofNullable(builder.getK()).orElse(0));
+        }
         out.writeOptionalNamedWriteable(builder.getFilter());
         if (minClusterVersionCheck.apply("ignore_unmapped")) {
             out.writeOptionalBoolean(builder.isIgnoreUnmapped());
@@ -234,8 +243,10 @@ public final class KNNQueryBuilderParser {
         builder.startObject(knnQueryBuilder.fieldName());
 
         builder.field(VECTOR_FIELD.getPreferredName(), knnQueryBuilder.vector());
-        builder.field(K_FIELD.getPreferredName(), knnQueryBuilder.getK());
 
+        if (knnQueryBuilder.getK() != null) {
+            builder.field(K_FIELD.getPreferredName(), knnQueryBuilder.getK());
+        }
         if (knnQueryBuilder.getFilter() != null) {
             builder.field(FILTER_FIELD.getPreferredName(), knnQueryBuilder.getFilter());
         }
@@ -269,9 +280,7 @@ public final class KNNQueryBuilderParser {
 
     private static float[] floatListToFloatArray(List<Float> floats) {
         if (Objects.isNull(floats) || floats.isEmpty()) {
-            throw new IllegalArgumentException(
-                String.format(Locale.ROOT, "[%s] field 'vector' requires to be non-null and non-empty", NAME)
-            );
+            throw new IllegalArgumentException(String.format("[%s] field 'vector' requires to be non-null and non-empty", NAME));
         }
         float[] vec = new float[floats.size()];
         for (int i = 0; i < floats.size(); i++) {

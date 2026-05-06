@@ -17,7 +17,9 @@ import org.apache.lucene.index.KnnVectorValues;
 import org.opensearch.knn.index.codec.util.KNNCodecUtil;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 /**
  * An abstract class that provides an iterator to iterate over KNNVectors, as KNNVectors are stored as different
@@ -67,30 +69,13 @@ public interface KNNVectorValuesIterator {
     VectorValueExtractorStrategy getVectorExtractorStrategy();
 
     /**
-     * A DocIdsIteratorValues provides a common iteration logic for all Values that implements
-     * {@link DocIdSetIterator} interface. Example: {@link BinaryDocValues}, {@link FloatVectorValues} etc.
+     * Abstract base class for KNN vector iterators, encapsulating common iteration logic.
      */
-    class DocIdsIteratorValues implements KNNVectorValuesIterator {
-        private final DocIdSetIterator docIdSetIterator;
-        private KnnVectorValues knnVectorValues = null; // Added reference to KnnVectorValues
-        @Getter
-        @Setter
-        private int lastOrd = -1;
-        @Getter
-        @Setter
-        private Object lastAccessedVector = null;
+    abstract class AbstractVectorValuesIterator implements KNNVectorValuesIterator {
+        protected final DocIdSetIterator docIdSetIterator;
 
-        DocIdsIteratorValues(@NonNull final KnnVectorValues knnVectorValues) {
-            this.docIdSetIterator = knnVectorValues.iterator();
-            this.knnVectorValues = knnVectorValues;
-        }
-
-        DocIdsIteratorValues(final DocIdSetIterator docIdSetIterator) {
+        AbstractVectorValuesIterator(@NonNull final DocIdSetIterator docIdSetIterator) {
             this.docIdSetIterator = docIdSetIterator;
-        }
-
-        public KnnVectorValues getKnnVectorValues() {
-            return knnVectorValues;
         }
 
         @Override
@@ -111,6 +96,41 @@ public interface KNNVectorValuesIterator {
         @Override
         public DocIdSetIterator getDocIdSetIterator() {
             return docIdSetIterator;
+        }
+
+        @Override
+        public long liveDocs() {
+            return docIdSetIterator.cost();
+        }
+    }
+
+    /**
+     * A DocIdsIteratorValues provides a common iteration logic for all Values that implements
+     * {@link DocIdSetIterator} interface. Example: {@link BinaryDocValues}, {@link FloatVectorValues} etc.
+     */
+    @Getter
+    class DocIdsIteratorValues extends AbstractVectorValuesIterator {
+
+        private final KnnVectorValues knnVectorValues;
+
+        @Setter
+        private int lastOrd = -1;
+        @Setter
+        private Object lastAccessedVector = null;
+
+        DocIdsIteratorValues(@NonNull final KnnVectorValues knnVectorValues) {
+            super(knnVectorValues.iterator());
+            this.knnVectorValues = knnVectorValues;
+        }
+
+        DocIdsIteratorValues(@NonNull final DocIdSetIterator docIdSetIterator) {
+            super(docIdSetIterator);
+            this.knnVectorValues = null;
+        }
+
+        DocIdsIteratorValues(@NonNull final DocIdSetIterator docIdSetIterator, @NonNull final KnnVectorValues knnVectorValues) {
+            super(docIdSetIterator);
+            this.knnVectorValues = knnVectorValues;
         }
 
         @Override
@@ -129,34 +149,43 @@ public interface KNNVectorValuesIterator {
         public VectorValueExtractorStrategy getVectorExtractorStrategy() {
             return new VectorValueExtractorStrategy.DISIVectorExtractor();
         }
+
     }
 
     /**
      * A FieldWriterIteratorValues is mainly used when Vectors are stored in {@link KnnFieldVectorsWriter} interface.
      */
-    class FieldWriterIteratorValues<T> implements KNNVectorValuesIterator {
-        private final DocIdSetIterator docIdSetIterator;
-        private final Map<Integer, T> vectors;
+    class FieldWriterIteratorValues<T> extends AbstractVectorValuesIterator {
+        private final Function<Integer, T> vectorGetter;
+        private int index = -1;
+        private int lastDocId = Integer.MIN_VALUE;
 
         FieldWriterIteratorValues(@NonNull final DocsWithFieldSet docsWithFieldSet, @NonNull final Map<Integer, T> vectors) {
+            super(docsWithFieldSet.iterator());
             assert docsWithFieldSet.iterator().cost() == vectors.size();
-            this.vectors = vectors;
-            this.docIdSetIterator = docsWithFieldSet.iterator();
+            this.vectorGetter = vectors::get;
         }
 
-        @Override
-        public int docId() {
-            return docIdSetIterator.docID();
-        }
-
-        @Override
-        public int advance(int docId) throws IOException {
-            return docIdSetIterator.advance(docId);
-        }
-
-        @Override
-        public int nextDoc() throws IOException {
-            return docIdSetIterator.nextDoc();
+        FieldWriterIteratorValues(@NonNull final DocsWithFieldSet docsWithFieldSet, @NonNull final List<T> vectors) {
+            super(docsWithFieldSet.iterator());
+            assert docsWithFieldSet.iterator().cost() == vectors.size();
+            // We can return vectors in sequential manner.
+            // Dense case -> Easy. doc_id == vector_ordinal and doc_id will be given as 0, 1, ..., N - 1
+            // Sparse case -> doc_id will be given in increasing order 1, 4, 7, 8, 10, ...
+            // but its corresponding vector ordinal is 0, 1, 2, ...
+            // The getter is idempotent — multiple getVector() calls for the same doc return the same vector
+            this.vectorGetter = (docId) -> {
+                if (docId != this.lastDocId) {
+                    if (docId < this.lastDocId) {
+                        throw new IllegalStateException(
+                            "Doc IDs must be in increasing order, but got " + docId + " after " + this.lastDocId
+                        );
+                    }
+                    this.index++;
+                    this.lastDocId = docId;
+                }
+                return vectors.get(this.index);
+            };
         }
 
         /**
@@ -164,17 +193,7 @@ public interface KNNVectorValuesIterator {
          * @return {@link Map}
          */
         public T vectorsValue() {
-            return vectors.get(docId());
-        }
-
-        @Override
-        public DocIdSetIterator getDocIdSetIterator() {
-            return docIdSetIterator;
-        }
-
-        @Override
-        public long liveDocs() {
-            return docIdSetIterator.cost();
+            return vectorGetter.apply(docId());
         }
 
         @Override
@@ -182,5 +201,4 @@ public interface KNNVectorValuesIterator {
             return new VectorValueExtractorStrategy.FieldWriterIteratorVectorExtractor();
         }
     }
-
 }

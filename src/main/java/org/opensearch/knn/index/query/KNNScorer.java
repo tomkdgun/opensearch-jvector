@@ -7,10 +7,8 @@ package org.opensearch.knn.index.query;
 
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.Scorer;
-import org.apache.lucene.search.Weight;
-
-import java.io.IOException;
-import java.util.Map;
+import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TopDocsCollector;
 
 /**
  * <p>
@@ -23,15 +21,13 @@ import java.util.Map;
  */
 public class KNNScorer extends Scorer {
 
-    private final DocIdSetIterator docIdsIter;
-    private final Map<Integer, Float> scores;
     private final float boost;
+    private final TopDocsDISI docIdsIter;
 
-    public KNNScorer(Weight weight, DocIdSetIterator docIdsIter, Map<Integer, Float> scores, float boost) {
+    public KNNScorer(TopDocs topDocs, final float boost) {
         super();
-        this.docIdsIter = docIdsIter;
-        this.scores = scores;
         this.boost = boost;
+        this.docIdsIter = new TopDocsDISI(topDocs);
     }
 
     @Override
@@ -40,16 +36,14 @@ public class KNNScorer extends Scorer {
     }
 
     @Override
-    public float getMaxScore(int upTo) throws IOException {
+    public float getMaxScore(int upTo) {
         return Float.MAX_VALUE;
     }
 
     @Override
     public float score() {
         assert docID() != DocIdSetIterator.NO_MORE_DOCS;
-        Float score = scores.get(docID());
-        if (score == null) throw new RuntimeException("Null score for the docID: " + docID());
-        return score * boost;
+        return docIdsIter.score() * boost;
     }
 
     @Override
@@ -63,41 +57,6 @@ public class KNNScorer extends Scorer {
      * @return {@link KNNScorer}
      */
     public static Scorer emptyScorer() {
-        return EMPTY_SCORER_INSTANCE;
+        return new KNNScorer(TopDocsCollector.EMPTY_TOPDOCS, 0);
     }
-
-    private static final Scorer EMPTY_SCORER_INSTANCE = new Scorer() {
-        private final DocIdSetIterator docIdsIter = DocIdSetIterator.empty();
-
-        @Override
-        public DocIdSetIterator iterator() {
-            return docIdsIter;
-        }
-
-        @Override
-        public float getMaxScore(int upTo) throws IOException {
-            return 0;
-        }
-
-        @Override
-        public float score() throws IOException {
-            assert docID() != DocIdSetIterator.NO_MORE_DOCS;
-            return 0;
-        }
-
-        @Override
-        public int docID() {
-            return docIdsIter.docID();
-        }
-
-        @Override
-        public boolean equals(Object obj) {
-            return this == obj; // Singleton ensures only one instance exists
-        }
-
-        @Override
-        public int hashCode() {
-            return System.identityHashCode(this); // Consistent hash for singleton
-        }
-    };
 }

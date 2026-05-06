@@ -123,14 +123,14 @@ public class KNN10010DerivedSourceStoredFieldsReader extends StoredFieldsReader 
      * on merge we will end up just writing the source to disk. We cant override
      * {@link StoredFieldsReader#getMergeInstance()} because it is used elsewhere than just merging.
      *
-     * @return Merged instance that won't inject by default
+     * @return Merged instance that wont inject by default
      */
     private StoredFieldsReader cloneForMerge() {
         try {
             return new KNN10010DerivedSourceStoredFieldsReader(
                 delegate.getMergeInstance(),
                 derivedVectorFields,
-                derivedSourceReaders.clone(),
+                derivedSourceReaders.getMergeInstance(),
                 segmentReadState,
                 false
             );
@@ -152,4 +152,13 @@ public class KNN10010DerivedSourceStoredFieldsReader extends StoredFieldsReader 
         }
         return storedFieldsReader;
     }
+
+    /**
+     * Returns the list of derived vector fields for this reader.
+     * Used during merge to collect field names from source segments.
+     */
+    public List<DerivedFieldInfo> getDerivedVectorFields() {
+        return derivedVectorFields;
+    }
+
 }

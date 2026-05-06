@@ -32,7 +32,7 @@ public class KNNStatsRequest extends BaseNodesRequest<KNNStatsRequest> {
      */
     public KNNStatsRequest() {
         super((String[]) null);
-        validStats = StatNames.getNames();
+        validStats = getValidStats();
         statsToBeRetrieved = new HashSet<>();
     }
 
@@ -55,7 +55,7 @@ public class KNNStatsRequest extends BaseNodesRequest<KNNStatsRequest> {
      */
     public KNNStatsRequest(String... nodeIds) {
         super(nodeIds);
-        validStats = StatNames.getNames();
+        validStats = getValidStats();
         statsToBeRetrieved = new HashSet<>();
     }
 
@@ -93,6 +93,14 @@ public class KNNStatsRequest extends BaseNodesRequest<KNNStatsRequest> {
      */
     public Set<String> getStatsToBeRetrieved() {
         return statsToBeRetrieved;
+    }
+
+    /**
+     * Get all valid stats, possibly omitting stats associated with disabled features
+     */
+    private Set<String> getValidStats() {
+        Set<String> stats = StatNames.getNames();
+        return stats;
     }
 
     @Override

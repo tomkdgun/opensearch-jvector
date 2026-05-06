@@ -4,9 +4,10 @@ This document explains who the admins are (see below), what they do in this repo
 
 ## Current Admins
 
-| Admin | GitHub ID                                 | Affiliation |
-|-------|-------------------------------------------| ----------- |
-| Samuel Herman   | [sam-herman](https://github.com/sam-herman) | DataStax    |
+| Admin           | GitHub ID                               | Affiliation |
+| --------------- | --------------------------------------- | ----------- |
+| Charlotte       | [CEHENKLE](https://github.com/CEHENKLE) | Amazon      |
+| Henri Yandell   | [hyandell](https://github.com/hyandell) | Amazon      |
 
 ## Admin Responsibilities
 

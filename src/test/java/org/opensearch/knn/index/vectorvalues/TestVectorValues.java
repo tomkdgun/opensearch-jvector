@@ -10,9 +10,8 @@ import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.VectorScorer;
 import org.apache.lucene.util.BytesRef;
 import org.opensearch.knn.index.SpaceType;
-import org.opensearch.knn.index.codec.jvector.GraphNodeIdToDocMap;
+import org.opensearch.knn.index.codec.util.KNNVectorAsCollectionOfFloatsSerializer;
 import org.opensearch.knn.index.codec.util.KNNVectorSerializer;
-import org.opensearch.knn.index.codec.util.KNNVectorSerializerFactory;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -80,7 +79,14 @@ public class TestVectorValues {
         }
     }
 
-    public static abstract class TestVectorDocValuesProducer extends DocValuesProducer {
+    public static class RandomVectorDocValuesProducer extends DocValuesProducer {
+
+        final RandomVectorBinaryDocValues randomBinaryDocValues;
+
+        public RandomVectorDocValuesProducer(int count, int dimension) {
+            this.randomBinaryDocValues = new RandomVectorBinaryDocValues(count, dimension);
+        }
+
         @Override
         public NumericDocValues getNumeric(FieldInfo field) {
             return null;
@@ -88,7 +94,7 @@ public class TestVectorValues {
 
         @Override
         public BinaryDocValues getBinary(FieldInfo field) throws IOException {
-            return null;
+            return randomBinaryDocValues;
         }
 
         @Override
@@ -129,34 +135,6 @@ public class TestVectorValues {
         }
     }
 
-    public static class ConstantVectorDocValuesProducer extends TestVectorDocValuesProducer {
-
-        final ConstantVectorBinaryDocValues constantBinaryDocValues;
-
-        public ConstantVectorDocValuesProducer(int count, int dimension, float value) {
-            this.constantBinaryDocValues = new ConstantVectorBinaryDocValues(count, dimension, value);
-        }
-
-        @Override
-        public BinaryDocValues getBinary(FieldInfo field) throws IOException {
-            return constantBinaryDocValues;
-        }
-    }
-
-    public static class RandomVectorDocValuesProducer extends TestVectorDocValuesProducer {
-
-        final RandomVectorBinaryDocValues randomBinaryDocValues;
-
-        public RandomVectorDocValuesProducer(int count, int dimension) {
-            this.randomBinaryDocValues = new RandomVectorBinaryDocValues(count, dimension);
-        }
-
-        @Override
-        public BinaryDocValues getBinary(FieldInfo field) throws IOException {
-            return randomBinaryDocValues;
-        }
-    }
-
     static abstract class VectorDocValues extends BinaryDocValues {
 
         final int count;
@@ -168,7 +146,7 @@ public class TestVectorValues {
             this.count = count;
             this.dimension = dimension;
             this.current = -1;
-            this.knnVectorSerializer = KNNVectorSerializerFactory.getDefaultSerializer();
+            this.knnVectorSerializer = KNNVectorAsCollectionOfFloatsSerializer.INSTANCE;
         }
 
         @Override
@@ -422,33 +400,6 @@ public class TestVectorValues {
         }
     }
 
-    public static class NotExistingDocIndexIterator extends KnnVectorValues.DocIndexIterator {
-        @Override
-        public int docID() {
-            return 0;
-        }
-
-        @Override
-        public int nextDoc() throws IOException {
-            return KnnVectorValues.DocIndexIterator.NO_MORE_DOCS;
-        }
-
-        @Override
-        public int advance(int target) throws IOException {
-            return 0;
-        }
-
-        @Override
-        public long cost() {
-            return 0;
-        }
-
-        @Override
-        public int index() {
-            return GraphNodeIdToDocMap.NO_VECTOR_OR_DELETED_DOC;
-        }
-    }
-
     public static class NotBinaryDocValues extends NumericDocValues {
 
         @Override
@@ -506,27 +457,17 @@ public class TestVectorValues {
         return data;
     }
 
-    public static KNNVectorValues<byte[]> createKNNBinaryVectorValues(final BinaryDocValues binaryDocValues) {
+    public static KNNVectorValues createKNNBinaryVectorValues(final BinaryDocValues binaryDocValues) {
         return new KNNBinaryVectorValues(new KNNVectorValuesIterator.DocIdsIteratorValues(binaryDocValues));
     }
 
-    public static KNNVectorValues<byte[]> createKNNBinaryVectorValues(final List<byte[]> vectors) {
+    public static KNNVectorValues createKNNBinaryVectorValues(final List<byte[]> vectors) {
         return new KNNBinaryVectorValues(new KNNVectorValuesIterator.DocIdsIteratorValues(new PreDefinedBinaryVectorValues(vectors)));
     }
 
-    public static KNNVectorValues<float[]> createKNNFloatVectorValues(final BinaryDocValues binaryDocValues) {
-        return new KNNFloatVectorValues(new KNNVectorValuesIterator.DocIdsIteratorValues(binaryDocValues));
-    }
-
-    public static KNNVectorValues<float[]> createKNNFloatVectorValues(final List<float[]> vectors) {
-        return new KNNFloatVectorValues(new KNNVectorValuesIterator.DocIdsIteratorValues(new PreDefinedFloatVectorValues(vectors)));
-    }
-
-    public static DocsWithFieldSet getDocIdSetIterator(int numberOfDocIds) {
-        final DocsWithFieldSet docsWithFieldSet = new DocsWithFieldSet();
-        for (int i = 0; i < numberOfDocIds; i++) {
-            docsWithFieldSet.add(i);
-        }
-        return docsWithFieldSet;
+    public static KNNVectorValues createKNNFloatVectorValues(final List<float[]> vectors) {
+        return new KNNFloatVectorValues(
+            new KNNVectorValuesIterator.DocIdsIteratorValues(new PredefinedFloatVectorBinaryDocValues(vectors))
+        );
     }
 }

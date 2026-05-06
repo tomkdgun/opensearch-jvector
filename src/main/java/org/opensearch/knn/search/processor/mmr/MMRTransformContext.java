@@ -23,8 +23,10 @@ import java.util.List;
 public class MMRTransformContext {
     @NonNull
     private final Integer candidates;
+    // During transform, we will also collect some info for MMR rerank processor to use later
     @NonNull
     private final MMRRerankContext mmrRerankContext;
+    // During transform, we need to figure out the knn_vector space type based on the index metadata
     @NonNull
     private final List<IndexMetadata> localIndexMetadataList;
     @NonNull

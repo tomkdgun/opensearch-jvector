@@ -26,18 +26,10 @@ public enum KNNCounter {
     MIN_SCORE_QUERY_REQUESTS("min_score_query_requests"),
     MIN_SCORE_QUERY_WITH_FILTER_REQUESTS("min_score_query_with_filter_requests"),
     MAX_DISTANCE_QUERY_REQUESTS("max_distance_query_requests"),
-    MAX_DISTANCE_QUERY_WITH_FILTER_REQUESTS("max_distance_query_with_filter_requests"),
-    KNN_QUERY_VISITED_NODES("knn_query_visited_nodes"),
-    KNN_QUERY_RERANKED_COUNT("knn_query_reranked_count"),
-    KNN_QUERY_EXPANDED_NODES("knn_query_expanded_nodes"),
-    KNN_QUERY_EXPANDED_BASE_LAYER_NODES("knn_query_expanded_base_layer_nodes"),
-    KNN_QUERY_GRAPH_SEARCH_TIME("knn_query_graph_search_time"), // The query time portion that is spent on scanning the vector graph
-    KNN_QUANTIZATION_TRAINING_TIME("knn_quantization_training_time"), // The time in indexing/merges that is spent on training the
-                                                                      // quantization parameters
-    KNN_GRAPH_MERGE_TIME("knn_graph_merge_time"); // The time taken for jVector graph merges
+    MAX_DISTANCE_QUERY_WITH_FILTER_REQUESTS("max_distance_query_with_filter_requests");
 
-    private final String name;
-    private final AtomicLong count;
+    private String name;
+    private AtomicLong count;
 
     /**
      * Constructor
@@ -80,14 +72,5 @@ public enum KNNCounter {
      */
     public void set(long value) {
         count.set(value);
-    }
-
-    /**
-     * Adds the specified delta to the current value of the counter.
-     *
-     * @param delta the value to add to the counter
-     */
-    public void add(long delta) {
-        count.addAndGet(delta);
     }
 }

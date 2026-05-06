@@ -5,10 +5,10 @@
 
 package org.opensearch.knn.index.util;
 
-import lombok.Setter;
-import lombok.NonNull;
 import lombok.AccessLevel;
 import lombok.NoArgsConstructor;
+import lombok.NonNull;
+import lombok.Setter;
 import lombok.extern.log4j.Log4j2;
 import org.opensearch.Version;
 import org.opensearch.action.IndicesRequest;
@@ -30,8 +30,8 @@ import java.util.stream.Collectors;
 public class KNNClusterUtil {
 
     private ClusterService clusterService;
-    private IndexNameExpressionResolver indexNameExpressionResolver;
     private static KNNClusterUtil instance;
+    private IndexNameExpressionResolver indexNameExpressionResolver;
     @Setter
     private SearchPipelineService searchPipelineService;
 
@@ -64,13 +64,16 @@ public class KNNClusterUtil {
         try {
             return this.clusterService.state().getNodes().getMinNodeVersion();
         } catch (Exception exception) {
-            log.error("Failed to get cluster minimum node version, returning current node version {} instead.", Version.CURRENT, exception);
+            log.error(
+                String.format("Failed to get cluster minimum node version, returning current node version %s instead.", Version.CURRENT),
+                exception
+            );
             return Version.CURRENT;
         }
     }
 
     /**
-     * Get index metadata for the given indices
+     *
      * @param searchRequest
      * @return IndexMetadata of the indices of the search request
      */

@@ -12,8 +12,14 @@ import org.apache.lucene.document.KnnByteVectorField;
 import org.apache.lucene.document.KnnFloatVectorField;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.util.BytesRef;
+import org.opensearch.knn.index.codec.util.KNNVectorAsCollectionOfFloatsSerializer;
 import org.opensearch.knn.index.codec.util.KNNVectorSerializer;
-import org.opensearch.knn.index.codec.util.KNNVectorSerializerFactory;
+import org.opensearch.knn.index.memory.NativeMemoryAllocation;
+import org.opensearch.knn.jni.JNICommons;
+import org.opensearch.knn.training.BinaryTrainingDataConsumer;
+import org.opensearch.knn.training.ByteTrainingDataConsumer;
+import org.opensearch.knn.training.FloatTrainingDataConsumer;
+import org.opensearch.knn.training.TrainingDataConsumer;
 
 import java.util.Arrays;
 import java.util.Locale;
@@ -25,7 +31,8 @@ import static org.opensearch.knn.common.KNNConstants.VECTOR_DATA_TYPE_FIELD;
 /**
  * Enum contains data_type of vectors
  * Lucene supports binary, byte and float data type
- * jVector supports float data type
+ * NMSLib supports only float data type
+ * Faiss supports binary and float data type
  */
 @AllArgsConstructor
 public enum VectorDataType {
@@ -39,15 +46,18 @@ public enum VectorDataType {
         }
 
         @Override
-        public float[] getVectorFromBytesRef(BytesRef binaryValue) {
-            float[] vector = new float[binaryValue.length];
-            int i = 0;
-            int j = binaryValue.offset;
+        public byte[] getVectorFromBytesRef(BytesRef binaryValue) {
+            return binaryValue.bytes;
+        }
 
-            while (i < binaryValue.length) {
-                vector[i++] = binaryValue.bytes[j++];
-            }
-            return vector;
+        @Override
+        public TrainingDataConsumer getTrainingDataConsumer(NativeMemoryAllocation.TrainingDataAllocation trainingDataAllocation) {
+            return new BinaryTrainingDataConsumer(trainingDataAllocation);
+        }
+
+        @Override
+        public void freeNativeMemory(long memoryAddress) {
+            JNICommons.freeBinaryVectorData(memoryAddress);
         }
     },
     BYTE("byte") {
@@ -58,15 +68,18 @@ public enum VectorDataType {
         }
 
         @Override
-        public float[] getVectorFromBytesRef(BytesRef binaryValue) {
-            float[] vector = new float[binaryValue.length];
-            int i = 0;
-            int j = binaryValue.offset;
+        public byte[] getVectorFromBytesRef(BytesRef binaryValue) {
+            return binaryValue.bytes;
+        }
 
-            while (i < binaryValue.length) {
-                vector[i++] = binaryValue.bytes[j++];
-            }
-            return vector;
+        @Override
+        public TrainingDataConsumer getTrainingDataConsumer(NativeMemoryAllocation.TrainingDataAllocation trainingDataAllocation) {
+            return new ByteTrainingDataConsumer(trainingDataAllocation);
+        }
+
+        @Override
+        public void freeNativeMemory(long memoryAddress) {
+            JNICommons.freeByteVectorData(memoryAddress);
         }
     },
     FLOAT("float") {
@@ -78,9 +91,20 @@ public enum VectorDataType {
 
         @Override
         public float[] getVectorFromBytesRef(BytesRef binaryValue) {
-            final KNNVectorSerializer vectorSerializer = KNNVectorSerializerFactory.getSerializerByBytesRef(binaryValue);
+            final KNNVectorSerializer vectorSerializer = KNNVectorAsCollectionOfFloatsSerializer.INSTANCE;
             return vectorSerializer.byteToFloatArray(binaryValue);
         }
+
+        @Override
+        public TrainingDataConsumer getTrainingDataConsumer(NativeMemoryAllocation.TrainingDataAllocation trainingDataAllocation) {
+            return new FloatTrainingDataConsumer(trainingDataAllocation);
+        }
+
+        @Override
+        public void freeNativeMemory(long memoryAddress) {
+            JNICommons.freeVectorData(memoryAddress);
+        }
+
     };
 
     public static final String SUPPORTED_VECTOR_DATA_TYPES = Arrays.stream(VectorDataType.values())
@@ -105,7 +129,18 @@ public enum VectorDataType {
      * @param binaryValue Binary Value
      * @return float vector deserialized from binary value
      */
-    public abstract float[] getVectorFromBytesRef(BytesRef binaryValue);
+    public abstract <T> T getVectorFromBytesRef(BytesRef binaryValue);
+
+    /**
+     * @param trainingDataAllocation training data that has been allocated in native memory
+     * @return TrainingDataConsumer which consumes training data
+     */
+    public abstract TrainingDataConsumer getTrainingDataConsumer(NativeMemoryAllocation.TrainingDataAllocation trainingDataAllocation);
+
+    /**
+     * @param memoryAddress address to be freed
+     */
+    public abstract void freeNativeMemory(long memoryAddress);
 
     /**
      * Validates if given VectorDataType is in the list of supported data types.

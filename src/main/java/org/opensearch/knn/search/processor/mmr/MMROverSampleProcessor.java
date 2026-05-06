@@ -89,7 +89,7 @@ public class MMROverSampleProcessor implements SearchRequestProcessor, SystemGen
                 );
             }
 
-            // Find the MMRSearchExtBuilder
+            // Find the MMRSearchExtBuilder. We must have one.
             MMRSearchExtBuilder mmrSearchExtBuilder = extractMMRExtension(request);
 
             String[] allTargetIndices = request.indices();
@@ -99,6 +99,7 @@ public class MMROverSampleProcessor implements SearchRequestProcessor, SystemGen
 
             MMRRerankContext mmrRerankContext = new MMRRerankContext();
             mmrRerankContext.setDiversity(mmrSearchExtBuilder.getDiversity());
+            mmrRerankContext.setExplain(mmrSearchExtBuilder.getExplain());
 
             validateForRemoteIndices(mmrSearchExtBuilder, remoteIndices);
 

@@ -6,14 +6,10 @@
 package org.opensearch.knn.index;
 
 import java.io.IOException;
-import java.util.Locale;
 import java.util.Objects;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
-
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.apache.lucene.index.BinaryDocValues;
 import org.apache.lucene.index.ByteVectorValues;
 import org.apache.lucene.index.FloatVectorValues;
@@ -21,11 +17,9 @@ import org.apache.lucene.index.KnnVectorValues;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.opensearch.ExceptionsHelper;
 import org.opensearch.index.fielddata.ScriptDocValues;
-import org.opensearch.knn.index.codec.jvector.GraphNodeIdToDocMap;
 
 @RequiredArgsConstructor(access = AccessLevel.PRIVATE)
-public abstract class KNNVectorScriptDocValues extends ScriptDocValues<float[]> {
-    private static final Logger log = LogManager.getLogger(KNNVectorScriptDocValues.class);
+public abstract class KNNVectorScriptDocValues<T> extends ScriptDocValues<T> {
 
     private final DocIdSetIterator vectorValues;
     private final String fieldName;
@@ -47,10 +41,9 @@ public abstract class KNNVectorScriptDocValues extends ScriptDocValues<float[]> 
         docExists = lastDocID == curDocID;
     }
 
-    public float[] getValue() {
+    public T getValue() {
         if (!docExists) {
             String errorMessage = String.format(
-                Locale.ROOT,
                 "One of the document doesn't have a value for field '%s'. "
                     + "This can be avoided by checking if a document has a value for the field or not "
                     + "by doc['%s'].size() == 0 ? 0 : {your script}",
@@ -66,7 +59,7 @@ public abstract class KNNVectorScriptDocValues extends ScriptDocValues<float[]> 
         }
     }
 
-    protected abstract float[] doGetValue() throws IOException;
+    protected abstract T doGetValue() throws IOException;
 
     @Override
     public int size() {
@@ -74,34 +67,41 @@ public abstract class KNNVectorScriptDocValues extends ScriptDocValues<float[]> 
     }
 
     @Override
-    public float[] get(int i) {
+    public T get(int i) {
         throw new UnsupportedOperationException("knn vector does not support this operation");
     }
 
     /**
      * Creates a KNNVectorScriptDocValues object based on the provided parameters.
      *
-     * @param values          The DocIdSetIterator representing the vector values.
+     * @param knnVectorValues          The DocIdSetIterator representing the vector values.
      * @param fieldName       The name of the field.
      * @param vectorDataType  The data type of the vector.
      * @return A KNNVectorScriptDocValues object based on the type of the values.
      * @throws IllegalArgumentException If the type of values is unsupported.
      */
-    public static KNNVectorScriptDocValues create(Object values, String fieldName, VectorDataType vectorDataType) {
-        Objects.requireNonNull(values, "values must not be null");
-
-        if (values instanceof FloatVectorValues) {
-            return new KNNFloatVectorScriptDocValues((FloatVectorValues) values, fieldName, vectorDataType);
-        } else if (values instanceof ByteVectorValues) {
-            return new KNNByteVectorScriptDocValues((ByteVectorValues) values, fieldName, vectorDataType);
-        } else if (values instanceof BinaryDocValues) {
-            return new KNNNativeVectorScriptDocValues((BinaryDocValues) values, fieldName, vectorDataType);
+    public static KNNVectorScriptDocValues<?> create(KnnVectorValues knnVectorValues, String fieldName, VectorDataType vectorDataType) {
+        Objects.requireNonNull(knnVectorValues, "values must not be null");
+        if (knnVectorValues instanceof FloatVectorValues) {
+            return new KNNFloatVectorScriptDocValues((FloatVectorValues) knnVectorValues, fieldName, vectorDataType);
+        } else if (knnVectorValues instanceof ByteVectorValues) {
+            return new KNNByteVectorScriptDocValues((ByteVectorValues) knnVectorValues, fieldName, vectorDataType);
         } else {
-            throw new IllegalArgumentException("Unsupported values type: " + values.getClass());
+            throw new IllegalArgumentException("Unsupported values type: " + knnVectorValues.getClass());
         }
     }
 
-    private static final class KNNByteVectorScriptDocValues extends KNNVectorScriptDocValues {
+    public static KNNVectorScriptDocValues<?> create(DocIdSetIterator docIdSetIterator, String fieldName, VectorDataType vectorDataType) {
+        Objects.requireNonNull(docIdSetIterator, "values must not be null");
+        if (docIdSetIterator instanceof BinaryDocValues) {
+            return new KNNNativeVectorScriptDocValues<>((BinaryDocValues) docIdSetIterator, fieldName, vectorDataType);
+        } else {
+            throw new IllegalArgumentException("Unsupported values type: " + docIdSetIterator.getClass());
+        }
+
+    }
+
+    private static final class KNNByteVectorScriptDocValues extends KNNVectorScriptDocValues<byte[]> {
         private final ByteVectorValues values;
         private final KnnVectorValues.DocIndexIterator iterator;
 
@@ -114,30 +114,22 @@ public abstract class KNNVectorScriptDocValues extends ScriptDocValues<float[]> 
         }
 
         @Override
-        protected float[] doGetValue() throws IOException {
-            int docId = this.iterator.docID();
+        protected byte[] doGetValue() throws IOException {
+            int docId = this.iterator.index();
             if (docId == KnnVectorValues.DocIndexIterator.NO_MORE_DOCS) {
                 throw new IllegalStateException("No more ordinals to retrieve vector values.");
             }
 
-            int ord = this.iterator.index();    // Fetch ordinal (index of vector)
-            if (ord == GraphNodeIdToDocMap.NO_VECTOR_OR_DELETED_DOC) {
-                log.debug("No vector value for docId {}, index is {}", docId, ord);
-                return null; /* no vector value */
+            try {
+                return values.vectorValue(docId);
+            } catch (IOException e) {
+                throw ExceptionsHelper.convertToOpenSearchException(e);
             }
-
-            // Use the correct method to retrieve the byte vector for the current ordinal
-            byte[] bytes = values.vectorValue(docId);
-            float[] value = new float[bytes.length];
-            for (int i = 0; i < bytes.length; i++) {
-                value[i] = (float) bytes[i];
-            }
-            return value;
         }
 
     }
 
-    private static final class KNNFloatVectorScriptDocValues extends KNNVectorScriptDocValues {
+    private static final class KNNFloatVectorScriptDocValues extends KNNVectorScriptDocValues<float[]> {
         private final FloatVectorValues values;
         private final KnnVectorValues.DocIndexIterator iterator;
 
@@ -151,20 +143,15 @@ public abstract class KNNVectorScriptDocValues extends ScriptDocValues<float[]> 
 
         @Override
         protected float[] doGetValue() throws IOException {
-            int docId = iterator.docID();
-            if (docId == KnnVectorValues.DocIndexIterator.NO_MORE_DOCS) {
-                throw new IllegalStateException("No more ordinals to retrieve vector values.");
-            }
             int ord = iterator.index();    // Fetch ordinal (index of vector)
-            if (ord == GraphNodeIdToDocMap.NO_VECTOR_OR_DELETED_DOC) {
-                log.debug("No vector value for docId {}, index is {}", docId, ord);
-                return null; /* no vector value */
+            if (ord == KnnVectorValues.DocIndexIterator.NO_MORE_DOCS) {
+                throw new IllegalStateException("No more ordinals to retrieve vector values.");
             }
             return values.vectorValue(ord);
         }
     }
 
-    private static final class KNNNativeVectorScriptDocValues extends KNNVectorScriptDocValues {
+    private static final class KNNNativeVectorScriptDocValues<T> extends KNNVectorScriptDocValues<T> {
         private final BinaryDocValues values;
 
         KNNNativeVectorScriptDocValues(BinaryDocValues values, String field, VectorDataType type) {
@@ -173,7 +160,7 @@ public abstract class KNNVectorScriptDocValues extends ScriptDocValues<float[]> 
         }
 
         @Override
-        protected float[] doGetValue() throws IOException {
+        protected T doGetValue() throws IOException {
             return getVectorDataType().getVectorFromBytesRef(values.binaryValue());
         }
     }
@@ -185,10 +172,18 @@ public abstract class KNNVectorScriptDocValues extends ScriptDocValues<float[]> 
      * @param type      The data type of the vector.
      * @return An empty KNNVectorScriptDocValues object.
      */
-    public static KNNVectorScriptDocValues emptyValues(String fieldName, VectorDataType type) {
-        return new KNNVectorScriptDocValues(DocIdSetIterator.empty(), fieldName, type) {
+    public static KNNVectorScriptDocValues<?> emptyValues(String fieldName, VectorDataType type) {
+        if (type == VectorDataType.FLOAT) {
+            return new KNNVectorScriptDocValues<float[]>(DocIdSetIterator.empty(), fieldName, type) {
+                @Override
+                protected float[] doGetValue() throws IOException {
+                    throw new UnsupportedOperationException("empty values");
+                }
+            };
+        }
+        return new KNNVectorScriptDocValues<byte[]>(DocIdSetIterator.empty(), fieldName, type) {
             @Override
-            protected float[] doGetValue() throws IOException {
+            protected byte[] doGetValue() throws IOException {
                 throw new UnsupportedOperationException("empty values");
             }
         };
